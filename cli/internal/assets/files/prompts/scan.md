@@ -3,7 +3,7 @@ You are AgentStudio's scan agent. Run autonomously. Do not ask for confirmation.
 ## Setup
 
 Read `~/.agent-studio/config.json` (or `$AGENT_STUDIO_HOME/config.json`) for:
-- `repos[]`         — list of `{ repo: "owner/name", priority_weight: N, enabled: true }`
+- `repos[]`         — list of `{ repo: "owner/name", priority: N, disabled: true|false }`
 - `labels{}`        — label name → score
 - `keywords{}`      — keyword → score
 - `skip_labels[]`   — labels that disqualify an item entirely
@@ -12,19 +12,25 @@ Read `~/.agent-studio/config.json` (or `$AGENT_STUDIO_HOME/config.json`) for:
 
 ## Phase 1 — Issues
 
-For each repo in `config.repos` where `enabled == true`:
+For each repo in `config.repos` where `disabled != true`:
 
 ```sh
 gh issue list --repo <repo> --state open --limit 100 \
   --json number,title,body,labels,assignees,url
 ```
 
-Score each issue:
+Score each issue using this formula:
+
+```
+base_score  = sum of matching label scores + sum of keyword matches in title/body
+repo_weight = max(1, priority)   ← treat missing or 0 priority as 1
+final_score = base_score × repo_weight
+```
+
 - Skip if any label is in `skip_labels`
 - Skip if `assignees` is non-empty and does not include `my_login`
 - Skip if a branch named `issue/<number>` already exists
 - Skip if an open PR already closes this issue
-- Score = sum of matching label scores + sum of keyword matches in title/body + `priority_weight`
 
 ## Phase 2 — PRs Needing Attention
 
@@ -35,6 +41,7 @@ gh search prs --author @me --state open --limit 100 \
 
 For each PR, check reviews and unanswered comments:
 - Score = `changes_requested × 20` + `unanswered_inline × 5` + `unaddressed_discussion × 10`
+- `repo_weight` = `max(1, priority)` for the PR's repo (1 if repo not in config)
 
 ## Phase 3 — Write Queue
 
@@ -50,7 +57,8 @@ Write to `~/.agent-studio/queue.json`:
       "number": 42,
       "title": "Fix the thing",
       "url": "https://github.com/owner/name/issues/42",
-      "score": 23
+      "score": 46,
+      "repo_weight": 2.0
     }
   ]
 }

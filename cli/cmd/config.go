@@ -53,10 +53,30 @@ var configReposListCmd = &cobra.Command{
 	RunE:  runConfigReposList,
 }
 
+var configReposDisableCmd = &cobra.Command{
+	Use:   "disable <owner/repo>",
+	Short: "Exclude a repo from scans without removing it",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConfigReposDisable,
+}
+
+var configReposEnableCmd = &cobra.Command{
+	Use:   "enable <owner/repo>",
+	Short: "Re-include a disabled repo in scans",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConfigReposEnable,
+}
+
 func init() {
 	configReposAddCmd.Flags().Float64P("priority", "p", 1.0, "Priority multiplier (higher = more likely to be worked)")
 
-	configReposCmd.AddCommand(configReposAddCmd, configReposRemoveCmd, configReposListCmd)
+	configReposCmd.AddCommand(
+		configReposAddCmd,
+		configReposRemoveCmd,
+		configReposListCmd,
+		configReposDisableCmd,
+		configReposEnableCmd,
+	)
 	configCmd.AddCommand(configShowCmd, configSetCmd, configReposCmd)
 }
 
@@ -129,11 +149,48 @@ func runConfigReposList(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "No repositories configured. Add one with 'studio config repos add owner/repo'")
 		return nil
 	}
-	fmt.Fprintf(out, "%-40s  %s\n", "REPO", "PRIORITY")
-	fmt.Fprintf(out, "%-40s  %s\n", "----", "--------")
+	fmt.Fprintf(out, "%-40s  %-8s  %s\n", "REPO", "PRIORITY", "STATUS")
+	fmt.Fprintf(out, "%-40s  %-8s  %s\n", "----", "--------", "------")
 	for _, r := range c.Repos {
-		fmt.Fprintf(out, "%-40s  %.1f\n", r.Repo, r.Priority)
+		status := "enabled"
+		if r.Disabled {
+			status = "disabled"
+		}
+		fmt.Fprintf(out, "%-40s  %-8.1f  %s\n", r.Repo, r.Priority, status)
 	}
+	return nil
+}
+
+func runConfigReposDisable(cmd *cobra.Command, args []string) error {
+	return setRepoDisabled(cmd, args[0], true)
+}
+
+func runConfigReposEnable(cmd *cobra.Command, args []string) error {
+	return setRepoDisabled(cmd, args[0], false)
+}
+
+func setRepoDisabled(cmd *cobra.Command, repo string, disabled bool) error {
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if disabled {
+		err = config.RepoDisable(&c, repo)
+	} else {
+		err = config.RepoEnable(&c, repo)
+	}
+	if err != nil {
+		return err
+	}
+	if err := config.Save(c); err != nil {
+		return err
+	}
+	action := "disabled"
+	if !disabled {
+		action = "enabled"
+	}
+	commitConfig(fmt.Sprintf("config: %s repo %s", action, repo))
+	fmt.Fprintf(cmd.OutOrStdout(), "ok  %s %s\n", repo, action)
 	return nil
 }
 

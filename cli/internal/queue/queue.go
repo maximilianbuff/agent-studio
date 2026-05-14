@@ -10,11 +10,14 @@ import (
 
 // Item represents a single work item in the queue.
 type Item struct {
-	Repo    string `json:"repo"`
-	Issue   int    `json:"issue"`
-	Title   string `json:"title"`
-	Score   int    `json:"score"`
-	Claimed bool   `json:"claimed,omitempty"`
+	Type      string  `json:"type"`
+	Repo      string  `json:"repo"`
+	Number    int     `json:"number"`
+	Title     string  `json:"title"`
+	URL       string  `json:"url,omitempty"`
+	Score     int     `json:"score"`
+	RepoWeight float64 `json:"repo_weight,omitempty"`
+	Claimed   bool    `json:"claimed,omitempty"`
 }
 
 // Path returns the path to queue.json.

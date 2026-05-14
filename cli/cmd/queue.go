@@ -47,7 +47,7 @@ func runQueueShow(cmd *cobra.Command, _ []string) error {
 		if it.Claimed {
 			claimed = " [claimed]"
 		}
-		fmt.Fprintf(out, "%-5d  %-35s  #%-6d %s%s\n", it.Score, it.Repo, it.Issue, it.Title, claimed)
+		fmt.Fprintf(out, "%-5d  %-35s  #%-6d %s%s\n", it.Score, it.Repo, it.Number, it.Title, claimed)
 	}
 	return nil
 }

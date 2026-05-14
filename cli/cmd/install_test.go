@@ -22,6 +22,29 @@ func runStudio(t *testing.T, studioHome string, args ...string) (string, error) 
 	return string(out), err
 }
 
+// runStudioCopy copies the binary to a throwaway path before running.
+// Use this for uninstall tests where the command removes os.Executable().
+func runStudioCopy(t *testing.T, studioHome string, args ...string) (string, error) {
+	t.Helper()
+	src := buildBinary(t)
+
+	tmp := t.TempDir()
+	dst := filepath.Join(tmp, "studio")
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("copy binary: %v", err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatalf("copy binary: %v", err)
+	}
+
+	cmd := exec.Command(dst, args...)
+	cmd.Env = append(os.Environ(), "AGENT_STUDIO_HOME="+studioHome)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 var compiledBinary string
 
 func buildBinary(t *testing.T) string {
@@ -233,7 +256,9 @@ func TestInstall_gitignoreContent(t *testing.T) {
 func TestUninstall_noErrorWhenNoCrontabBlock(t *testing.T) {
 	studioHome := t.TempDir()
 
-	output, err := runStudio(t, studioHome, "uninstall")
+	// Use --yes to skip the interactive confirmation prompt.
+	// Use runStudioCopy so the binary self-removal doesn't delete the shared test binary.
+	output, err := runStudioCopy(t, studioHome, "uninstall", "--yes")
 	if err != nil {
 		t.Fatalf("studio uninstall failed:\n%s\nerr: %v", output, err)
 	}
@@ -247,7 +272,7 @@ func TestUninstall_purgeDeletesDirectory(t *testing.T) {
 		t.Fatalf("install: %s: %v", out1, err)
 	}
 
-	out2, err := runStudio(t, studioHome, "uninstall", "--purge", "--yes")
+	out2, err := runStudioCopy(t, studioHome, "uninstall", "--purge", "--yes")
 	if err != nil {
 		t.Fatalf("uninstall --purge: %s: %v", out2, err)
 	}
@@ -265,7 +290,8 @@ func TestUninstall_withoutPurgeKeepsDirectory(t *testing.T) {
 		t.Fatalf("install: %s: %v", out1, err)
 	}
 
-	out2, err := runStudio(t, studioHome, "uninstall")
+	// --yes skips the first confirmation; no --purge so data dir is kept.
+	out2, err := runStudioCopy(t, studioHome, "uninstall", "--yes")
 	if err != nil {
 		t.Fatalf("uninstall: %s: %v", out2, err)
 	}

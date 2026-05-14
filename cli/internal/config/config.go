@@ -27,6 +27,7 @@ type Config struct {
 type RepoEntry struct {
 	Repo     string  `json:"repo"`
 	Priority float64 `json:"priority,omitempty"`
+	Disabled bool    `json:"disabled,omitempty"`
 }
 
 // Path returns the path to config.json.
@@ -117,6 +118,26 @@ func RepoAdd(c *Config, repo string, priority float64) error {
 		p = 1.0
 	}
 	c.Repos = append(c.Repos, RepoEntry{Repo: repo, Priority: p})
+	return nil
+}
+
+// RepoDisable marks a repo as disabled (skipped by the scan agent).
+func RepoDisable(c *Config, repo string) error {
+	idx := slices.IndexFunc(c.Repos, func(r RepoEntry) bool { return r.Repo == repo })
+	if idx < 0 {
+		return fmt.Errorf("repo %q not in list", repo)
+	}
+	c.Repos[idx].Disabled = true
+	return nil
+}
+
+// RepoEnable clears the disabled flag on a repo.
+func RepoEnable(c *Config, repo string) error {
+	idx := slices.IndexFunc(c.Repos, func(r RepoEntry) bool { return r.Repo == repo })
+	if idx < 0 {
+		return fmt.Errorf("repo %q not in list", repo)
+	}
+	c.Repos[idx].Disabled = false
 	return nil
 }
 
