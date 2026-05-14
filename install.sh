@@ -115,11 +115,11 @@ if [ "$INSTALLED" -eq 0 ]; then
   echo "Building studio@$BUILD_VERSION..."
 
   mkdir -p "$BIN_DIR"
-  cd "$TMP_DIR/repo"
+  cd "$TMP_DIR/repo/cli"
   go build \
     -ldflags "-X main.version=$BUILD_VERSION -s -w" \
     -o "$BIN_DIR/studio" \
-    ./cli
+    .
   cd - >/dev/null
 fi
 
