@@ -10,24 +10,69 @@ import (
 	"testing"
 )
 
-// testEnv returns an env slice with AGENT_STUDIO_HOME and HOME pointed at
-// isolated temp dirs so tests never touch the real ~/.agent-studio or
-// ~/.claude/CLAUDE.md.
+// testEnv returns an isolated environment for studio subprocesses.
+// Overrides HOME, AGENT_STUDIO_HOME, and PATH (prepends a fake crontab) so
+// tests never touch the real ~/.agent-studio, ~/.claude/CLAUDE.md, or crontab.
 func testEnv(studioHome string) []string {
-	// Give each invocation its own HOME so claudemd.Path() resolves inside tmp.
-	fakeHome := filepath.Dir(studioHome) // parent of studioHome is fine
+	fakeHome := filepath.Dir(studioHome)
+	fakeCronDir := fakeCrontabDir(studioHome)
+
 	env := os.Environ()
-	filtered := env[:0]
+	filtered := make([]string, 0, len(env))
 	for _, e := range env {
-		if !strings.HasPrefix(e, "HOME=") && !strings.HasPrefix(e, "AGENT_STUDIO_HOME=") {
+		switch {
+		case strings.HasPrefix(e, "HOME="),
+			strings.HasPrefix(e, "AGENT_STUDIO_HOME="),
+			strings.HasPrefix(e, "FAKE_CRONTAB_FILE="):
+			// drop — we set our own below
+		default:
 			filtered = append(filtered, e)
 		}
 	}
+
+	// Prepend fakeCronDir to PATH so `crontab` resolves to our stub.
+	path := fakeCronDir
+	for _, e := range filtered {
+		if strings.HasPrefix(e, "PATH=") {
+			path += ":" + strings.TrimPrefix(e, "PATH=")
+			break
+		}
+	}
+	// Remove original PATH entry — we'll add our own.
+	out := filtered[:0]
+	for _, e := range filtered {
+		if !strings.HasPrefix(e, "PATH=") {
+			out = append(out, e)
+		}
+	}
+	filtered = out
+
 	filtered = append(filtered,
 		"AGENT_STUDIO_HOME="+studioHome,
 		"HOME="+fakeHome,
+		"PATH="+path,
+		"FAKE_CRONTAB_FILE="+filepath.Join(studioHome, "fake-crontab.txt"),
 	)
 	return filtered
+}
+
+// fakeCrontabDir writes a stub `crontab` script into a sibling temp dir
+// (NOT inside studioHome) and returns that dir. The stub reads/writes
+// FAKE_CRONTAB_FILE so no test ever touches the real crontab.
+func fakeCrontabDir(studioHome string) string {
+	// Place the fake-bin dir alongside studioHome, not inside it.
+	dir := filepath.Join(filepath.Dir(studioHome), ".fake-bin")
+	os.MkdirAll(dir, 0o755)
+	script := `#!/bin/sh
+FILE="${FAKE_CRONTAB_FILE:-/tmp/fake-crontab.txt}"
+case "$1" in
+  -l) cat "$FILE" 2>/dev/null; exit 0 ;;
+  -)  cat > "$FILE"; exit 0 ;;
+  *)  echo "fake crontab: unsupported args: $*" >&2; exit 1 ;;
+esac
+`
+	os.WriteFile(filepath.Join(dir, "crontab"), []byte(script), 0o755)
+	return dir
 }
 
 // runStudio builds the binary once per test run and invokes it with the
