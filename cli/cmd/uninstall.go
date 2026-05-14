@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/maximilianbuff/agent-studio/internal/claudemd"
 	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/home"
 	"github.com/spf13/cobra"
@@ -38,7 +39,14 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	if err := crontab.DeleteBlock(crontab.DefaultRunCmd, crontab.DefaultRunCmdStdin); err != nil {
 		return fmt.Errorf("removing crontab block: %w", err)
 	}
-	line(out, "ok      AgentStudio crontab block removed")
+	line(out, "ok      crontab block removed")
+
+	step(out, "Removing Claude Code registration")
+	if err := claudemd.Remove(); err != nil {
+		line(out, "warn    could not update %s: %v", claudemd.Path(), err)
+	} else {
+		line(out, "ok      removed from %s", claudemd.Path())
+	}
 
 	if purge {
 		if !yes {

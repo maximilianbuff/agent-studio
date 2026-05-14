@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/maximilianbuff/agent-studio/internal/assets"
+	"github.com/maximilianbuff/agent-studio/internal/claudemd"
 	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/gitops"
 	"github.com/maximilianbuff/agent-studio/internal/home"
@@ -124,6 +125,16 @@ func runInstall(cmd *cobra.Command, _ []string) error {
 			); err != nil {
 				return fmt.Errorf("registering cron jobs: %w", err)
 			}
+		}
+	}
+
+	step(out, "Registering with Claude Code")
+	claudeMDPath := claudemd.Path()
+	line(out, "inject  %s", claudeMDPath)
+	if !dryRun {
+		if err := claudemd.Inject(studioHome); err != nil {
+			// Non-fatal — Claude Code may not be installed.
+			line(out, "warn    could not write %s: %v", claudeMDPath, err)
 		}
 	}
 
