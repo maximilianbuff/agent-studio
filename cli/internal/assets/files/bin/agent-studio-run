@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# agent-studio-run <job>
+# Runs a headless Claude session using the prompt at
+# $AGENT_STUDIO_HOME/prompts/<job>.md.
+# Invoked by cron — uses a per-job flock to prevent overlapping runs.
+set -euo pipefail
+
+JOB="${1:?Usage: agent-studio-run <job-name>}"
+STUDIO_HOME="${AGENT_STUDIO_HOME:-$HOME/.agent-studio}"
+PROMPT_FILE="$STUDIO_HOME/prompts/${JOB}.md"
+LOCK_FILE="$STUDIO_HOME/${JOB}.lock"
+LOG_FILE="$STUDIO_HOME/logs/${JOB}.log"
+
+# Cron strips the user environment — source profile to restore PATH.
+# shellcheck disable=SC1090,SC1091
+for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zprofile"; do
+  [[ -f "$f" ]] && source "$f" && break
+done
+
+if [[ ! -f "$PROMPT_FILE" ]]; then
+  echo "[agent-studio-run] prompt not found: $PROMPT_FILE" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# Acquire per-job lock — skip this run if the previous one is still active.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[agent-studio-run] $JOB already running ($(cat "$LOCK_FILE" 2>/dev/null || echo '?')), skipping" >&2
+  exit 0
+fi
+
+echo $$ >"$LOCK_FILE"
+echo "[agent-studio-run] starting $JOB (pid $$) at $(date -u +%FT%TZ)"
+
+exec claude --dangerously-skip-permissions -p "$(cat "$PROMPT_FILE")"

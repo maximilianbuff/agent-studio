@@ -1,0 +1,15 @@
+{
+  "my_login": "",
+  "repos": [],
+  "labels": {
+    "bug": 8,
+    "critical": 15,
+    "security": 15
+  },
+  "keywords": {
+    "crash": 8,
+    "regression": 7
+  },
+  "skip_labels": ["wontfix", "duplicate", "on-hold"],
+  "min_score": 0
+}

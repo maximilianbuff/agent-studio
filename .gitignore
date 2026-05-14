@@ -1,0 +1,8 @@
+backend/agent-studio-server
+backend/agent_studio.db
+frontend/node_modules
+frontend/dist
+/tmp/agent-studio-work
+*.log
+/studio
+/dist/
