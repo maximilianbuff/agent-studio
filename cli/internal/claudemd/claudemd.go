@@ -123,18 +123,23 @@ func HasBlock(content string) bool {
 // replaceBlock replaces the AgentStudio block in content with newBlock.
 // If no block exists, newBlock is appended. If newBlock is empty, the
 // block is removed entirely.
+// replaceBlock removes every AgentStudio block from content and, if newBlock
+// is non-empty, inserts it where the first block was (or appends it).
+// This guarantees idempotency and handles stale duplicate blocks.
 func replaceBlock(content, newBlock string) string {
+	// Collect lines that are outside any block, tracking where the first
+	// block started so we can re-insert the new block at that position.
 	lines := strings.Split(content, "\n")
 
 	var before, after []string
 	inBlock := false
-	blockFound := false
+	firstBlockFound := false
 
 	for _, l := range lines {
 		trimmed := strings.TrimSpace(l)
 		if trimmed == beginMarker {
 			inBlock = true
-			blockFound = true
+			firstBlockFound = true
 			continue
 		}
 		if trimmed == endMarker {
@@ -144,18 +149,20 @@ func replaceBlock(content, newBlock string) string {
 		if inBlock {
 			continue
 		}
-		if !blockFound {
+		if !firstBlockFound {
 			before = append(before, l)
 		} else {
 			after = append(after, l)
 		}
 	}
 
+	// Strip content that itself contains stale block markers (defensive).
+	after = filterBlockLines(after)
+
 	before = trimTrailingEmpty(before)
 	after = trimLeadingEmpty(after)
 
 	if newBlock == "" {
-		// Removal: just stitch before + after back together.
 		parts := []string{}
 		if len(before) > 0 {
 			parts = append(parts, strings.Join(before, "\n"))
@@ -184,6 +191,28 @@ func replaceBlock(content, newBlock string) string {
 		result += "\n"
 	}
 	return result
+}
+
+// filterBlockLines removes any remaining block markers and their content
+// from a slice of lines (handles duplicate blocks left by old bugs).
+func filterBlockLines(lines []string) []string {
+	var out []string
+	inBlock := false
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == beginMarker {
+			inBlock = true
+			continue
+		}
+		if trimmed == endMarker {
+			inBlock = false
+			continue
+		}
+		if !inBlock {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func trimTrailingEmpty(lines []string) []string {

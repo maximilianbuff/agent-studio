@@ -10,14 +10,34 @@ import (
 	"testing"
 )
 
+// testEnv returns an env slice with AGENT_STUDIO_HOME and HOME pointed at
+// isolated temp dirs so tests never touch the real ~/.agent-studio or
+// ~/.claude/CLAUDE.md.
+func testEnv(studioHome string) []string {
+	// Give each invocation its own HOME so claudemd.Path() resolves inside tmp.
+	fakeHome := filepath.Dir(studioHome) // parent of studioHome is fine
+	env := os.Environ()
+	filtered := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, "HOME=") && !strings.HasPrefix(e, "AGENT_STUDIO_HOME=") {
+			filtered = append(filtered, e)
+		}
+	}
+	filtered = append(filtered,
+		"AGENT_STUDIO_HOME="+studioHome,
+		"HOME="+fakeHome,
+	)
+	return filtered
+}
+
 // runStudio builds the binary once per test run and invokes it with the
-// given arguments, with AGENT_STUDIO_HOME pointed at the temp dir.
+// given arguments, with AGENT_STUDIO_HOME and HOME pointed at temp dirs.
 func runStudio(t *testing.T, studioHome string, args ...string) (string, error) {
 	t.Helper()
 	bin := buildBinary(t)
 
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(os.Environ(), "AGENT_STUDIO_HOME="+studioHome)
+	cmd.Env = testEnv(studioHome)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -40,7 +60,7 @@ func runStudioCopy(t *testing.T, studioHome string, args ...string) (string, err
 	}
 
 	cmd := exec.Command(dst, args...)
-	cmd.Env = append(os.Environ(), "AGENT_STUDIO_HOME="+studioHome)
+	cmd.Env = testEnv(studioHome)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
