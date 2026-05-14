@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // IsRepo reports whether dir is inside a git repository.
@@ -54,22 +55,48 @@ func Commit(dir, msg string) error {
 	return nil
 }
 
-// Log returns the one-line git log for dir.
-func Log(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "log", "--oneline").CombinedOutput()
+// Log returns up to n one-line git log entries for dir.
+func Log(dir string, n int) ([]string, error) {
+	args := []string{"-C", dir, "log", "--oneline"}
+	if n > 0 {
+		args = append(args, fmt.Sprintf("-%d", n))
+	}
+	out, err := exec.Command("git", args...).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git log: %s: %w", string(out), err)
+		return nil, fmt.Errorf("git log: %s: %w", string(out), err)
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, nil
+}
+
+// Diff returns changes between ref and the working tree for dir.
+// Use ref="HEAD" for uncommitted changes.
+func Diff(dir, ref string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "diff", ref).CombinedOutput()
+	if err != nil {
+		return string(out), nil // diff exits 1 when changes exist — still useful
 	}
 	return string(out), nil
 }
 
-// Diff returns the current diff for dir (staged + unstaged).
-func Diff(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "diff", "HEAD").CombinedOutput()
-	if err != nil {
-		return string(out), nil // diff exits 1 when there are changes, still useful
+// Rollback creates a revert commit that undoes all changes since sha.
+func Rollback(dir, sha string) error {
+	cmd := exec.Command("git", "-C", dir, "revert", "--no-commit", sha+"..HEAD")
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=agent-studio",
+		"GIT_AUTHOR_EMAIL=agent-studio@localhost",
+		"GIT_COMMITTER_NAME=agent-studio",
+		"GIT_COMMITTER_EMAIL=agent-studio@localhost",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git revert: %s: %w", string(out), err)
 	}
-	return string(out), nil
+	return Commit(dir, fmt.Sprintf("rollback: revert to %s", sha))
 }
 
 // RemoteSet sets (or replaces) the origin remote.
