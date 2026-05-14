@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/maximilianbuff/agent-studio/internal/assets"
 	"github.com/maximilianbuff/agent-studio/internal/claudemd"
@@ -40,12 +42,14 @@ func init() {
 	installCmd.Flags().Bool("dry-run", false, "Print what would be done without making changes")
 	installCmd.Flags().Bool("force", false, "Overwrite existing files (use when updating)")
 	installCmd.Flags().Bool("no-cron", false, "Skip crontab registration")
+	installCmd.Flags().Bool("yes", false, "Accept all prompts non-interactively")
 }
 
 func runInstall(cmd *cobra.Command, _ []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
 	noCron, _ := cmd.Flags().GetBool("no-cron")
+	yes, _ := cmd.Flags().GetBool("yes")
 
 	out := cmd.OutOrStdout()
 	studioHome := home.Dir()
@@ -128,14 +132,18 @@ func runInstall(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	step(out, "Registering with Claude Code")
-	claudeMDPath := claudemd.Path()
-	line(out, "inject  %s", claudeMDPath)
-	if !dryRun {
-		if err := claudemd.Inject(studioHome); err != nil {
-			// Non-fatal — Claude Code may not be installed.
-			line(out, "warn    could not write %s: %v", claudeMDPath, err)
+	step(out, "Claude Code integration")
+	if confirm(cmd, yes, dryRun,
+		fmt.Sprintf("Inject AgentStudio context into %s so every Claude Code\n  session on this machine knows studio is available? [Y/n] ", claudemd.Path()),
+	) {
+		line(out, "inject  %s", claudemd.Path())
+		if !dryRun {
+			if err := claudemd.Inject(studioHome); err != nil {
+				line(out, "warn    could not write %s: %v", claudemd.Path(), err)
+			}
 		}
+	} else {
+		line(out, "skip    Claude Code integration")
 	}
 
 	fmt.Fprintln(out)
@@ -187,6 +195,41 @@ func copyDefaults(out io.Writer, studioHome string, dryRun, force bool) error {
 		}
 		return os.WriteFile(dst, data, mode)
 	})
+}
+
+// confirm asks the user a yes/no question, returning true for yes.
+// Returns true immediately when yes==true or dryRun==true (dry-run previews the action).
+// Defaults to yes on empty input. Returns false when stdin is not a terminal.
+func confirm(cmd *cobra.Command, yes, dryRun bool, prompt string) bool {
+	if dryRun || yes {
+		return true
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "\n  %s", prompt)
+
+	in := cmd.InOrStdin()
+	// Fall back to no when stdin is not interactive (piped install.sh | sh).
+	fi, ok := in.(*os.File)
+	if !ok || !isTerminal(fi) {
+		fmt.Fprintln(out, "y (non-interactive, defaulting to yes)")
+		return true
+	}
+
+	scanner := bufio.NewScanner(in)
+	if !scanner.Scan() {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+// isTerminal reports whether f is a character device (TTY).
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func step(out io.Writer, format string, args ...any) {
