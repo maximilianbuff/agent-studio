@@ -69,6 +69,14 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Done. To remove the studio binary: make uninstall")
+	fmt.Fprintln(out, "Done. To remove the studio binary:")
+	fmt.Fprintln(out)
+
+	self, err := os.Executable()
+	if err == nil {
+		fmt.Fprintf(out, "  rm %s\n", self)
+	} else {
+		fmt.Fprintln(out, "  rm $(which studio)")
+	}
 	return nil
 }
