@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
-	"time"
 
 	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/home"
@@ -68,6 +71,7 @@ var jobsLogsCmd = &cobra.Command{
 }
 
 func init() {
+	jobsListCmd.Flags().StringP("output", "o", "", "Output format: json")
 	jobsLogsCmd.Flags().BoolP("tail", "f", false, "Follow log output (like tail -f)")
 	jobsLogsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
 
@@ -82,30 +86,107 @@ func init() {
 	)
 }
 
+type jobRow struct {
+	Job         string `json:"job"`
+	Description string `json:"description"`
+	Scheduled   bool   `json:"scheduled"`
+	Schedule    string `json:"schedule,omitempty"`
+}
+
 func runJobsList(cmd *cobra.Command, _ []string) error {
-	entries, err := crontab.GetEntries(crontab.DefaultRunCmd)
+	outputFmt, _ := cmd.Flags().GetString("output")
+
+	cronEntries, err := crontab.GetEntries(crontab.DefaultRunCmd)
 	if err != nil {
 		return err
 	}
+	scheduled := make(map[string]crontab.Entry, len(cronEntries))
+	for _, e := range cronEntries {
+		scheduled[e.Job] = e
+	}
+
+	promptsDir := home.Path("prompts")
+	entries, err := os.ReadDir(promptsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading prompts dir: %w", err)
+	}
+
+	seen := make(map[string]bool)
+	var rows []jobRow
+
+	for _, de := range entries {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
+			continue
+		}
+		job := strings.TrimSuffix(de.Name(), ".md")
+		seen[job] = true
+		desc := extractDescription(filepath.Join(promptsDir, de.Name()))
+		row := jobRow{Job: job, Description: desc}
+		if e, ok := scheduled[job]; ok {
+			row.Scheduled = true
+			row.Schedule = e.Schedule
+		}
+		rows = append(rows, row)
+	}
+
+	for _, e := range cronEntries {
+		if !seen[e.Job] {
+			rows = append(rows, jobRow{
+				Job:         e.Job,
+				Description: "MISSING prompt file",
+				Scheduled:   true,
+				Schedule:    e.Schedule,
+			})
+		}
+	}
+
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Job < rows[j].Job })
 
 	out := cmd.OutOrStdout()
-	if len(entries) == 0 {
-		fmt.Fprintln(out, "No AgentStudio jobs scheduled. Run 'studio install' to set up.")
+
+	if outputFmt == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rows)
+	}
+
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "No jobs found. Run 'studio install' to set up default jobs.")
 		return nil
 	}
 
-	fmt.Fprintf(out, "%-12s  %-20s  %-8s  %s\n", "JOB", "SCHEDULE", "STATUS", "LAST RUN")
-	fmt.Fprintf(out, "%-12s  %-20s  %-8s  %s\n", "---", "--------", "------", "--------")
-
-	for _, e := range entries {
-		status := "enabled"
-		if !e.Enabled {
-			status = "disabled"
+	fmt.Fprintf(out, "%-20s  %-44s  %s\n", "JOB", "DESCRIPTION", "SCHEDULED")
+	fmt.Fprintf(out, "%-20s  %-44s  %s\n", "---", "-----------", "---------")
+	for _, r := range rows {
+		sched := "no"
+		if r.Scheduled {
+			sched = "yes (" + r.Schedule + ")"
 		}
-		lastRun := lastRunTime(e.Job)
-		fmt.Fprintf(out, "%-12s  %-20s  %-8s  %s\n", e.Job, e.Schedule, status, lastRun)
+		desc := r.Description
+		if len(desc) > 44 {
+			desc = desc[:41] + "..."
+		}
+		fmt.Fprintf(out, "%-20s  %-44s  %s\n", r.Job, desc, sched)
 	}
 	return nil
+}
+
+func extractDescription(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line
+	}
+	return ""
 }
 
 func runJobsRun(cmd *cobra.Command, args []string) error {
@@ -254,40 +335,4 @@ func runJobsLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	return c.Run()
-}
-
-// lastRunTime returns a human-readable string for the last modification time
-// of the job's log file, or "never" if the log does not exist.
-func lastRunTime(job string) string {
-	logFile := home.Path("logs", job+".log")
-	info, err := os.Stat(logFile)
-	if err != nil {
-		return "never"
-	}
-	return humanDuration(time.Since(info.ModTime()))
-}
-
-func humanDuration(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		m := int(d.Minutes())
-		if m == 1 {
-			return "1 minute ago"
-		}
-		return fmt.Sprintf("%d minutes ago", m)
-	case d < 24*time.Hour:
-		h := int(d.Hours())
-		if h == 1 {
-			return "1 hour ago"
-		}
-		return fmt.Sprintf("%d hours ago", h)
-	default:
-		days := int(d.Hours() / 24)
-		if days == 1 {
-			return "1 day ago"
-		}
-		return fmt.Sprintf("%d days ago", days)
-	}
 }
