@@ -10,6 +10,6 @@
     "crash": 8,
     "regression": 7
   },
-  "skip_labels": ["wontfix", "duplicate", "on-hold"],
+  "skip_labels": ["wontfix", "duplicate", "on-hold", "in-progress"],
   "min_score": 0
 }

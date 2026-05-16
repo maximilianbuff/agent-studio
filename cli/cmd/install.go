@@ -11,6 +11,7 @@ import (
 
 	"github.com/maximilianbuff/agent-studio/internal/assets"
 	"github.com/maximilianbuff/agent-studio/internal/claudemd"
+	"github.com/maximilianbuff/agent-studio/internal/config"
 	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/gitops"
 	"github.com/maximilianbuff/agent-studio/internal/home"
@@ -113,9 +114,10 @@ func runInstall(cmd *cobra.Command, _ []string) error {
 
 	if !noCron {
 		step(out, "Registering cron jobs")
+		cfg, _ := config.Load()
 		defaultJobs := []crontab.Entry{
-			{Job: "scan", Schedule: "7 */2 * * *", Enabled: true},
-			{Job: "worker", Schedule: "*/2 * * * *", Enabled: true},
+			{Job: "scan", Schedule: cfg.EffectiveScanInterval(), Enabled: true},
+			{Job: "worker", Schedule: cfg.EffectiveWorkerInterval(), Enabled: true},
 		}
 		for _, e := range defaultJobs {
 			line(out, "enable  %s (%s)", e.Job, e.Schedule)

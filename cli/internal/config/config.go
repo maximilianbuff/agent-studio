@@ -13,14 +13,51 @@ import (
 	"github.com/maximilianbuff/agent-studio/internal/home"
 )
 
+const (
+	DefaultWorkerInterval = "*/10 * * * *"
+	DefaultScanInterval   = "7 */2 * * *"
+	DefaultMaxWorkers     = 1
+)
+
 // Config is the full studio configuration.
 type Config struct {
-	MyLogin    string         `json:"my_login"`
-	Repos      []RepoEntry    `json:"repos"`
-	Labels     map[string]int `json:"labels"`
-	Keywords   map[string]int `json:"keywords"`
-	SkipLabels []string       `json:"skip_labels"`
-	MinScore   int            `json:"min_score"`
+	MyLogin          string         `json:"my_login"`
+	Repos            []RepoEntry    `json:"repos"`
+	Labels           map[string]int `json:"labels"`
+	Keywords         map[string]int `json:"keywords"`
+	SkipLabels       []string       `json:"skip_labels"`
+	MinScore         int            `json:"min_score"`
+	WorkerInterval   string         `json:"worker_interval,omitempty"`
+	ScanInterval     string         `json:"scan_interval,omitempty"`
+	MaxWorkers       int            `json:"max_workers,omitempty"`
+	AuthMode         string         `json:"auth_mode,omitempty"`
+	AnthropicAPIKey  string         `json:"anthropic_api_key,omitempty"`
+	DailyTokenBudget int            `json:"daily_token_budget,omitempty"`
+	TokenThreshold   float64        `json:"token_threshold,omitempty"`
+}
+
+// EffectiveWorkerInterval returns the configured interval or the default.
+func (c Config) EffectiveWorkerInterval() string {
+	if c.WorkerInterval != "" {
+		return c.WorkerInterval
+	}
+	return DefaultWorkerInterval
+}
+
+// EffectiveScanInterval returns the configured interval or the default.
+func (c Config) EffectiveScanInterval() string {
+	if c.ScanInterval != "" {
+		return c.ScanInterval
+	}
+	return DefaultScanInterval
+}
+
+// EffectiveMaxWorkers returns the configured max or the default.
+func (c Config) EffectiveMaxWorkers() int {
+	if c.MaxWorkers > 0 {
+		return c.MaxWorkers
+	}
+	return DefaultMaxWorkers
 }
 
 // RepoEntry is a repository with an optional priority multiplier.
@@ -58,6 +95,7 @@ func Load() (Config, error) {
 }
 
 // Save writes c back to config.json with a trailing newline.
+// Uses mode 0600 when an API key is present to protect the secret.
 func Save(c Config) error {
 	p := Path()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -68,11 +106,20 @@ func Save(c Config) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(p, data, 0o644)
+	mode := os.FileMode(0o644)
+	if c.AnthropicAPIKey != "" {
+		mode = 0o600
+	}
+	return os.WriteFile(p, data, mode)
+}
+
+// ScheduleKeys lists config keys that affect the live crontab schedule.
+var ScheduleKeys = map[string]string{
+	"worker_interval": "worker",
+	"scan_interval":   "scan",
 }
 
 // Set applies a key=value update to the config.
-// Supported keys: my_login, min_score, labels.<label>, keywords.<word>, skip_labels.
 func Set(c *Config, key, value string) error {
 	switch {
 	case key == "my_login":
@@ -83,6 +130,35 @@ func Set(c *Config, key, value string) error {
 			return fmt.Errorf("min_score must be an integer: %w", err)
 		}
 		c.MinScore = n
+	case key == "worker_interval":
+		c.WorkerInterval = value
+	case key == "scan_interval":
+		c.ScanInterval = value
+	case key == "max_workers":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("max_workers must be a positive integer")
+		}
+		c.MaxWorkers = n
+	case key == "auth_mode":
+		if value != "subscription" && value != "api_key" {
+			return fmt.Errorf("auth_mode must be \"subscription\" or \"api_key\"")
+		}
+		c.AuthMode = value
+	case key == "anthropic_api_key":
+		c.AnthropicAPIKey = value
+	case key == "daily_token_budget":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("daily_token_budget must be a non-negative integer")
+		}
+		c.DailyTokenBudget = n
+	case key == "token_threshold":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 || f > 1 {
+			return fmt.Errorf("token_threshold must be a float between 0 and 1")
+		}
+		c.TokenThreshold = f
 	case strings.HasPrefix(key, "labels."):
 		label := strings.TrimPrefix(key, "labels.")
 		n, err := strconv.Atoi(value)
@@ -98,7 +174,7 @@ func Set(c *Config, key, value string) error {
 		}
 		c.Keywords[kw] = n
 	default:
-		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, labels.<label>, keywords.<word>", key)
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, worker_interval, scan_interval, max_workers, auth_mode, anthropic_api_key, daily_token_budget, token_threshold, labels.<label>, keywords.<word>", key)
 	}
 	return nil
 }

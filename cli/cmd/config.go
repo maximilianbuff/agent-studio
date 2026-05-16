@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
+	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/gitops"
 	"github.com/maximilianbuff/agent-studio/internal/home"
 	"github.com/spf13/cobra"
@@ -102,8 +103,35 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	commitConfig(fmt.Sprintf("config: set %s", args[0]))
+	// If a schedule key changed, update the live crontab immediately.
+	if _, isSchedule := config.ScheduleKeys[args[0]]; isSchedule {
+		if err := applySchedule(c); err != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "warn  crontab not updated: %v\n", err)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "ok  crontab updated\n")
+		}
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "ok  %s = %s\n", args[0], args[1])
 	return nil
+}
+
+// applySchedule writes the current worker/scan schedules from config into the live crontab.
+func applySchedule(c config.Config) error {
+	studioHome := home.Dir()
+	entries, err := crontab.GetEntries(crontab.DefaultRunCmd)
+	if err != nil {
+		return err
+	}
+	schedules := map[string]string{
+		"worker": c.EffectiveWorkerInterval(),
+		"scan":   c.EffectiveScanInterval(),
+	}
+	for i, e := range entries {
+		if s, ok := schedules[e.Job]; ok {
+			entries[i].Schedule = s
+		}
+	}
+	return crontab.SetEntries(entries, studioHome, crontab.DefaultRunCmd, crontab.DefaultRunCmdStdin)
 }
 
 func runConfigReposAdd(cmd *cobra.Command, args []string) error {
