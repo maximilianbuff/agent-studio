@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # agent-studio-run <job>
-# Runs a headless Claude session using the prompt at
-# $AGENT_STUDIO_HOME/prompts/<job>.md.
-# Invoked by cron — uses a per-job flock to prevent overlapping runs.
+# Dispatcher for AgentStudio cron jobs.
+# - scan: routes to native `studio scan` (no Claude)
+# - worker: checks queue, then runs Claude with worker.md prompt
+# Invoked by cron — uses per-job flock(s) to prevent overlapping runs.
 set -euo pipefail
 
 JOB="${1:?Usage: agent-studio-run <job-name>}"
 STUDIO_HOME="${AGENT_STUDIO_HOME:-$HOME/.agent-studio}"
-PROMPT_FILE="$STUDIO_HOME/prompts/${JOB}.md"
-LOCK_FILE="$STUDIO_HOME/${JOB}.lock"
 LOG_FILE="$STUDIO_HOME/logs/${JOB}.log"
+CONFIG_FILE="$STUDIO_HOME/config.json"
 
 # Cron strips the user environment — source profile to restore PATH.
 # shellcheck disable=SC1090,SC1091
@@ -17,21 +17,71 @@ for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zprofile"; do
   [[ -f "$f" ]] && source "$f" && break
 done
 
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# --- Numbered lockfile concurrency (worker only, others use single lock) ---
+if [[ "$JOB" == "worker" ]] && [[ -f "$CONFIG_FILE" ]]; then
+  MAX_WORKERS=$(jq -r '.jobs.worker.concurrency // 1' "$CONFIG_FILE" 2>/dev/null || echo "1")
+  [[ "$MAX_WORKERS" =~ ^[1-9][0-9]*$ ]] || MAX_WORKERS=1
+else
+  MAX_WORKERS=1
+fi
+
+CLAIMED=0
+SLOT=1
+for i in $(seq 1 "$MAX_WORKERS"); do
+  LOCK_FILE="$STUDIO_HOME/${JOB}-${i}.lock"
+  exec {LOCK_FD}>>"$LOCK_FILE"
+  if flock -n "$LOCK_FD"; then
+    CLAIMED=1
+    SLOT=$i
+    echo $$ >"$LOCK_FILE"
+    break
+  fi
+done
+
+if [[ "$CLAIMED" -eq 0 ]]; then
+  echo "[agent-studio-run] $JOB: all $MAX_WORKERS slot(s) busy, skipping" >&2
+  exit 0
+fi
+
+echo "[agent-studio-run] starting $JOB (pid $$, slot $SLOT) at $(date -u +%FT%TZ)"
+
+# --- Route scan to native studio command (no Claude) ---
+if [[ "$JOB" == "scan" ]]; then
+  exec studio scan
+fi
+
+# --- For all other jobs (worker etc.): check queue before starting Claude ---
+if [[ "$JOB" == "worker" ]]; then
+  QUEUE_FILE="$STUDIO_HOME/queue.json"
+  if [[ ! -f "$QUEUE_FILE" ]]; then
+    echo "[agent-studio-run] queue.json not found — run 'studio scan' first" >&2
+    exit 0
+  fi
+  QUEUE_COUNT=$(jq '(.items // .) | length' "$QUEUE_FILE" 2>/dev/null || echo "0")
+  if [[ "$QUEUE_COUNT" -eq 0 ]]; then
+    echo "[agent-studio-run] queue empty, skipping worker" >&2
+    exit 0
+  fi
+  echo "[agent-studio-run] queue has $QUEUE_COUNT item(s), starting worker"
+fi
+
+PROMPT_FILE="$STUDIO_HOME/prompts/${JOB}.md"
 if [[ ! -f "$PROMPT_FILE" ]]; then
   echo "[agent-studio-run] prompt not found: $PROMPT_FILE" >&2
   exit 1
 fi
 
-mkdir -p "$(dirname "$LOG_FILE")"
-
-# Acquire per-job lock — skip this run if the previous one is still active.
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  echo "[agent-studio-run] $JOB already running ($(cat "$LOCK_FILE" 2>/dev/null || echo '?')), skipping" >&2
-  exit 0
+# --- Auth mode ---
+if [[ -f "$CONFIG_FILE" ]]; then
+  AUTH_MODE=$(jq -r '.auth_mode // "subscription"' "$CONFIG_FILE" 2>/dev/null || echo "subscription")
+  if [[ "$AUTH_MODE" == "api_key" ]]; then
+    API_KEY=$(jq -r '.anthropic_api_key // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$API_KEY" ]]; then
+      export ANTHROPIC_API_KEY="$API_KEY"
+    fi
+  fi
 fi
-
-echo $$ >"$LOCK_FILE"
-echo "[agent-studio-run] starting $JOB (pid $$) at $(date -u +%FT%TZ)"
 
 exec claude --dangerously-skip-permissions -p "$(cat "$PROMPT_FILE")"

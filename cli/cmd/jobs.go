@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,9 +8,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strings"
 	"syscall"
+	"time"
 
+	"github.com/maximilianbuff/agent-studio/internal/config"
 	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/home"
 	"github.com/spf13/cobra"
@@ -70,10 +70,19 @@ var jobsLogsCmd = &cobra.Command{
 	RunE:  runJobsLogs,
 }
 
+var jobsSetCmd = &cobra.Command{
+	Use:   "set <job>",
+	Short: "Set schedule or concurrency for a job",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJobsSet,
+}
+
 func init() {
 	jobsListCmd.Flags().StringP("output", "o", "", "Output format: json")
 	jobsLogsCmd.Flags().BoolP("tail", "f", false, "Follow log output (like tail -f)")
 	jobsLogsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
+	jobsSetCmd.Flags().StringP("interval", "i", "", "Cron schedule expression (e.g. \"*/10 * * * *\")")
+	jobsSetCmd.Flags().IntP("concurrency", "c", 0, "Max concurrent instances (worker only)")
 
 	jobsCmd.AddCommand(
 		jobsListCmd,
@@ -83,61 +92,49 @@ func init() {
 		jobsAddCmd,
 		jobsRemoveCmd,
 		jobsLogsCmd,
+		jobsSetCmd,
 	)
 }
 
 type jobRow struct {
 	Job         string `json:"job"`
-	Description string `json:"description"`
-	Scheduled   bool   `json:"scheduled"`
-	Schedule    string `json:"schedule,omitempty"`
+	Schedule    string `json:"schedule"`
+	Concurrency int    `json:"concurrency"`
+	Enabled     bool   `json:"enabled"`
+	LastRun     string `json:"last_run,omitempty"`
 }
 
 func runJobsList(cmd *cobra.Command, _ []string) error {
 	outputFmt, _ := cmd.Flags().GetString("output")
 
+	cfg, _ := config.Load()
+
 	cronEntries, err := crontab.GetEntries(crontab.DefaultRunCmd)
 	if err != nil {
 		return err
 	}
-	scheduled := make(map[string]crontab.Entry, len(cronEntries))
+	cronMap := make(map[string]crontab.Entry, len(cronEntries))
 	for _, e := range cronEntries {
-		scheduled[e.Job] = e
+		cronMap[e.Job] = e
 	}
 
-	promptsDir := home.Path("prompts")
-	entries, err := os.ReadDir(promptsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading prompts dir: %w", err)
+	// Collect known jobs: built-ins + any in crontab.
+	seen := map[string]bool{"scan": true, "worker": true}
+	for _, e := range cronEntries {
+		seen[e.Job] = true
 	}
 
-	seen := make(map[string]bool)
 	var rows []jobRow
-
-	for _, de := range entries {
-		if de.IsDir() || !strings.HasSuffix(de.Name(), ".md") {
-			continue
-		}
-		job := strings.TrimSuffix(de.Name(), ".md")
-		seen[job] = true
-		desc := extractDescription(filepath.Join(promptsDir, de.Name()))
-		row := jobRow{Job: job, Description: desc}
-		if e, ok := scheduled[job]; ok {
-			row.Scheduled = true
-			row.Schedule = e.Schedule
-		}
-		rows = append(rows, row)
-	}
-
-	for _, e := range cronEntries {
-		if !seen[e.Job] {
-			rows = append(rows, jobRow{
-				Job:         e.Job,
-				Description: "MISSING prompt file",
-				Scheduled:   true,
-				Schedule:    e.Schedule,
-			})
-		}
+	for job := range seen {
+		e, inCron := cronMap[job]
+		enabled := inCron && e.Enabled
+		rows = append(rows, jobRow{
+			Job:         job,
+			Schedule:    cfg.JobInterval(job),
+			Concurrency: cfg.JobConcurrency(job),
+			Enabled:     enabled,
+			LastRun:     lastRunTime(job),
+		})
 	}
 
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Job < rows[j].Job })
@@ -155,44 +152,51 @@ func runJobsList(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	fmt.Fprintf(out, "%-20s  %-44s  %s\n", "JOB", "DESCRIPTION", "SCHEDULED")
-	fmt.Fprintf(out, "%-20s  %-44s  %s\n", "---", "-----------", "---------")
+	fmt.Fprintf(out, "%-10s  %-20s  %-11s  %-8s  %s\n", "JOB", "SCHEDULE", "CONCURRENCY", "STATUS", "LAST RUN")
+	fmt.Fprintf(out, "%-10s  %-20s  %-11s  %-8s  %s\n", "---", "--------", "-----------", "------", "--------")
 	for _, r := range rows {
-		sched := "no"
-		if r.Scheduled {
-			sched = "yes (" + r.Schedule + ")"
+		status := "disabled"
+		if r.Enabled {
+			status = "enabled"
 		}
-		desc := r.Description
-		if len(desc) > 44 {
-			desc = desc[:41] + "..."
-		}
-		fmt.Fprintf(out, "%-20s  %-44s  %s\n", r.Job, desc, sched)
+		fmt.Fprintf(out, "%-10s  %-20s  %-11d  %-8s  %s\n",
+			r.Job, r.Schedule, r.Concurrency, status, r.LastRun)
 	}
 	return nil
 }
 
-func extractDescription(path string) string {
-	f, err := os.Open(path)
+func lastRunTime(job string) string {
+	logFile := home.Path("logs", job+".log")
+	info, err := os.Stat(logFile)
 	if err != nil {
-		return ""
+		return "never"
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		return line
-	}
-	return ""
+	return humanDuration(time.Since(info.ModTime())) + " ago"
 }
+
+func humanDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 
 func runJobsRun(cmd *cobra.Command, args []string) error {
 	job := args[0]
-	runner := home.Path("bin", "agent-studio-run")
 
+	// scan is a native command — no runner script needed.
+	if job == "scan" {
+		return runScan(cmd, nil)
+	}
+
+	runner := home.Path("bin", "agent-studio-run")
 	if _, err := os.Stat(runner); os.IsNotExist(err) {
 		return fmt.Errorf("runner not found at %s — run 'studio install' first", runner)
 	}
@@ -202,6 +206,53 @@ func runJobsRun(cmd *cobra.Command, args []string) error {
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
 	return c.Run()
+}
+
+func runJobsSet(cmd *cobra.Command, args []string) error {
+	job := args[0]
+	interval, _ := cmd.Flags().GetString("interval")
+	concurrency, _ := cmd.Flags().GetInt("concurrency")
+
+	if interval == "" && concurrency == 0 {
+		return fmt.Errorf("specify at least one of --interval (-i) or --concurrency (-c)")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	config.SetJob(&cfg, job, interval, concurrency)
+
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+
+	// Update live crontab: refresh schedule for this job.
+	entries, err := crontab.GetEntries(crontab.DefaultRunCmd)
+	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "warn  crontab not updated: %v\n", err)
+	} else {
+		for i, e := range entries {
+			if e.Job == job {
+				entries[i].Schedule = cfg.JobInterval(job)
+			}
+		}
+		if err := crontab.SetEntries(entries, home.Dir(), crontab.DefaultRunCmd, crontab.DefaultRunCmdStdin); err != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "warn  crontab not updated: %v\n", err)
+		}
+	}
+
+	commitConfig(fmt.Sprintf("config: set job %s", job))
+
+	out := cmd.OutOrStdout()
+	if interval != "" {
+		fmt.Fprintf(out, "ok  %s interval = %s\n", job, interval)
+	}
+	if concurrency > 0 {
+		fmt.Fprintf(out, "ok  %s concurrency = %d\n", job, concurrency)
+	}
+	return nil
 }
 
 func runJobsEnable(cmd *cobra.Command, args []string) error {
