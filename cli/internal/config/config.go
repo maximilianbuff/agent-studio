@@ -13,14 +13,89 @@ import (
 	"github.com/maximilianbuff/agent-studio/internal/home"
 )
 
+const (
+	DefaultScanInterval   = "*/5 * * * *"
+	DefaultWorkerInterval = "*/10 * * * *"
+)
+
+// JobConfig holds per-job scheduling and concurrency settings.
+type JobConfig struct {
+	Interval    string `json:"interval,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
+	Disabled    bool   `json:"disabled,omitempty"`
+}
+
+// DefaultIssueTypeWeights are the built-in multipliers applied on top of label/keyword scores.
+var DefaultIssueTypeWeights = map[string]float64{
+	"security":      3.0,
+	"critical":      3.0,
+	"bug":           2.0,
+	"fix":           1.5,
+	"feature":       1.0,
+	"enhancement":   1.0,
+	"documentation": 0.5,
+}
+
 // Config is the full studio configuration.
 type Config struct {
-	MyLogin    string         `json:"my_login"`
-	Repos      []RepoEntry    `json:"repos"`
-	Labels     map[string]int `json:"labels"`
-	Keywords   map[string]int `json:"keywords"`
-	SkipLabels []string       `json:"skip_labels"`
-	MinScore   int            `json:"min_score"`
+	MyLogin          string             `json:"my_login"`
+	Repos            []RepoEntry        `json:"repos"`
+	Labels           map[string]int     `json:"labels"`
+	Keywords         map[string]int     `json:"keywords"`
+	SkipLabels       []string           `json:"skip_labels"`
+	MinScore         int                `json:"min_score"`
+	Jobs             map[string]JobConfig  `json:"jobs,omitempty"`
+	AuthMode         string             `json:"auth_mode,omitempty"`
+	AnthropicAPIKey  string             `json:"anthropic_api_key,omitempty"`
+	IssueTypeWeights map[string]float64 `json:"issue_type_weights,omitempty"`
+}
+
+// EffectiveIssueTypeWeights returns configured weights merged over built-in defaults.
+func (c Config) EffectiveIssueTypeWeights() map[string]float64 {
+	merged := make(map[string]float64, len(DefaultIssueTypeWeights))
+	for k, v := range DefaultIssueTypeWeights {
+		merged[k] = v
+	}
+	for k, v := range c.IssueTypeWeights {
+		merged[k] = v
+	}
+	return merged
+}
+
+// JobInterval returns the cron schedule for job, falling back to built-in defaults.
+func (c Config) JobInterval(job string) string {
+	if c.Jobs != nil {
+		if j, ok := c.Jobs[job]; ok && j.Interval != "" {
+			return j.Interval
+		}
+	}
+	switch job {
+	case "scan":
+		return DefaultScanInterval
+	case "worker":
+		return DefaultWorkerInterval
+	}
+	return DefaultWorkerInterval
+}
+
+// JobConcurrency returns the max concurrent instances for job (default 1).
+func (c Config) JobConcurrency(job string) int {
+	if c.Jobs != nil {
+		if j, ok := c.Jobs[job]; ok && j.Concurrency > 0 {
+			return j.Concurrency
+		}
+	}
+	return 1
+}
+
+// JobDisabled reports whether job is disabled in config.
+func (c Config) JobDisabled(job string) bool {
+	if c.Jobs != nil {
+		if j, ok := c.Jobs[job]; ok {
+			return j.Disabled
+		}
+	}
+	return false
 }
 
 // RepoEntry is a repository with an optional priority multiplier.
@@ -58,6 +133,7 @@ func Load() (Config, error) {
 }
 
 // Save writes c back to config.json with a trailing newline.
+// Uses mode 0600 when an API key is present to protect the secret.
 func Save(c Config) error {
 	p := Path()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -68,11 +144,29 @@ func Save(c Config) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(p, data, 0o644)
+	mode := os.FileMode(0o644)
+	if c.AnthropicAPIKey != "" {
+		mode = 0o600
+	}
+	return os.WriteFile(p, data, mode)
+}
+
+// SetJob updates interval and/or concurrency for a named job.
+func SetJob(c *Config, job, interval string, concurrency int) {
+	if c.Jobs == nil {
+		c.Jobs = map[string]JobConfig{}
+	}
+	j := c.Jobs[job]
+	if interval != "" {
+		j.Interval = interval
+	}
+	if concurrency > 0 {
+		j.Concurrency = concurrency
+	}
+	c.Jobs[job] = j
 }
 
 // Set applies a key=value update to the config.
-// Supported keys: my_login, min_score, labels.<label>, keywords.<word>, skip_labels.
 func Set(c *Config, key, value string) error {
 	switch {
 	case key == "my_login":
@@ -83,6 +177,23 @@ func Set(c *Config, key, value string) error {
 			return fmt.Errorf("min_score must be an integer: %w", err)
 		}
 		c.MinScore = n
+	case key == "auth_mode":
+		if value != "subscription" && value != "api_key" {
+			return fmt.Errorf("auth_mode must be \"subscription\" or \"api_key\"")
+		}
+		c.AuthMode = value
+	case key == "anthropic_api_key":
+		c.AnthropicAPIKey = value
+	case strings.HasPrefix(key, "issue_type_weights."):
+		label := strings.TrimPrefix(key, "issue_type_weights.")
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 {
+			return fmt.Errorf("issue_type_weights value must be a non-negative float")
+		}
+		if c.IssueTypeWeights == nil {
+			c.IssueTypeWeights = map[string]float64{}
+		}
+		c.IssueTypeWeights[label] = f
 	case strings.HasPrefix(key, "labels."):
 		label := strings.TrimPrefix(key, "labels.")
 		n, err := strconv.Atoi(value)
@@ -98,7 +209,7 @@ func Set(c *Config, key, value string) error {
 		}
 		c.Keywords[kw] = n
 	default:
-		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, labels.<label>, keywords.<word>", key)
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, labels.<label>, keywords.<word>", key)
 	}
 	return nil
 }

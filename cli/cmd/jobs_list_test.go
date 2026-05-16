@@ -33,15 +33,31 @@ func TestJobsList_showsBuiltinJobs(t *testing.T) {
 	}
 }
 
-func TestJobsList_showsScheduledStatus(t *testing.T) {
+func TestJobsList_showsSchedule(t *testing.T) {
+	studioHome := setupJobsListHome(t)
+
+	output, err := runStudio(t, studioHome, "jobs", "list")
+	if err != nil {
+		t.Fatalf("jobs list: %s: %v", output, err)
+	}
+
+	// Default intervals should appear in the output.
+	for _, sched := range []string{"*/5 * * * *", "*/10 * * * *"} {
+		if !strings.Contains(output, sched) {
+			t.Errorf("expected schedule %q in output, got:\n%s", sched, output)
+		}
+	}
+}
+
+func TestJobsList_showsEnabledStatus(t *testing.T) {
 	studioHome := setupJobsListHome(t)
 
 	crontabFile := filepath.Join(studioHome, "fake-crontab.txt")
 	block := `# BEGIN_AGENT_STUDIO — do not edit this block manually
 # AGENT_STUDIO_JOB=scan
-7 */2 * * *  ` + studioHome + `/bin/agent-studio-run scan >> ` + studioHome + `/logs/scan.log 2>&1
+*/5 * * * *  ` + studioHome + `/bin/agent-studio-run scan >> ` + studioHome + `/logs/scan.log 2>&1
 # AGENT_STUDIO_JOB=worker
-*/2 * * * *  ` + studioHome + `/bin/agent-studio-run worker >> ` + studioHome + `/logs/worker.log 2>&1
+*/10 * * * *  ` + studioHome + `/bin/agent-studio-run worker >> ` + studioHome + `/logs/worker.log 2>&1
 # END_AGENT_STUDIO
 `
 	os.WriteFile(crontabFile, []byte(block), 0o644)
@@ -51,40 +67,18 @@ func TestJobsList_showsScheduledStatus(t *testing.T) {
 		t.Fatalf("jobs list: %s: %v", output, err)
 	}
 
-	if !strings.Contains(output, "yes") {
-		t.Errorf("expected 'yes' for scheduled jobs, got:\n%s", output)
-	}
-	if !strings.Contains(output, "7 */2 * * *") {
-		t.Errorf("expected schedule expression in output, got:\n%s", output)
+	if !strings.Contains(output, "enabled") {
+		t.Errorf("expected 'enabled' in output, got:\n%s", output)
 	}
 }
 
-func TestJobsList_showsUnscheduledJobs(t *testing.T) {
-	studioHome := setupJobsListHome(t)
-
-	promptPath := filepath.Join(studioHome, "prompts", "triage-issues.md")
-	os.WriteFile(promptPath, []byte("Triage and label incoming issues.\n\n## Details\n..."), 0o644)
-
-	output, err := runStudio(t, studioHome, "jobs", "list")
-	if err != nil {
-		t.Fatalf("jobs list: %s: %v", output, err)
-	}
-
-	if !strings.Contains(output, "triage-issues") {
-		t.Errorf("expected triage-issues in output, got:\n%s", output)
-	}
-	if !strings.Contains(output, "no") {
-		t.Errorf("expected 'no' for unscheduled job, got:\n%s", output)
-	}
-}
-
-func TestJobsList_showsMissingPromptWarning(t *testing.T) {
+func TestJobsList_showsExtraJobsFromCrontab(t *testing.T) {
 	studioHome := setupJobsListHome(t)
 
 	crontabFile := filepath.Join(studioHome, "fake-crontab.txt")
 	block := `# BEGIN_AGENT_STUDIO — do not edit this block manually
-# AGENT_STUDIO_JOB=ghost-job
-*/5 * * * *  ` + studioHome + `/bin/agent-studio-run ghost-job >> ` + studioHome + `/logs/ghost-job.log 2>&1
+# AGENT_STUDIO_JOB=triage
+*/30 * * * *  ` + studioHome + `/bin/agent-studio-run triage >> ` + studioHome + `/logs/triage.log 2>&1
 # END_AGENT_STUDIO
 `
 	os.WriteFile(crontabFile, []byte(block), 0o644)
@@ -94,11 +88,8 @@ func TestJobsList_showsMissingPromptWarning(t *testing.T) {
 		t.Fatalf("jobs list: %s: %v", output, err)
 	}
 
-	if !strings.Contains(output, "ghost-job") {
-		t.Errorf("expected ghost-job in output, got:\n%s", output)
-	}
-	if !strings.Contains(output, "MISSING") {
-		t.Errorf("expected MISSING warning for job without prompt, got:\n%s", output)
+	if !strings.Contains(output, "triage") {
+		t.Errorf("expected triage job in output, got:\n%s", output)
 	}
 }
 
@@ -108,7 +99,7 @@ func TestJobsList_jsonOutput(t *testing.T) {
 	crontabFile := filepath.Join(studioHome, "fake-crontab.txt")
 	block := `# BEGIN_AGENT_STUDIO — do not edit this block manually
 # AGENT_STUDIO_JOB=scan
-7 */2 * * *  ` + studioHome + `/bin/agent-studio-run scan >> ` + studioHome + `/logs/scan.log 2>&1
+*/5 * * * *  ` + studioHome + `/bin/agent-studio-run scan >> ` + studioHome + `/logs/scan.log 2>&1
 # END_AGENT_STUDIO
 `
 	os.WriteFile(crontabFile, []byte(block), 0o644)
@@ -127,42 +118,18 @@ func TestJobsList_jsonOutput(t *testing.T) {
 	for _, r := range rows {
 		if r.Job == "scan" {
 			found = true
-			if !r.Scheduled {
-				t.Error("scan should be scheduled=true")
+			if !r.Enabled {
+				t.Error("scan should be enabled=true")
 			}
-			if r.Schedule != "7 */2 * * *" {
-				t.Errorf("scan schedule: got %q, want %q", r.Schedule, "7 */2 * * *")
+			if r.Schedule == "" {
+				t.Error("scan schedule should not be empty")
 			}
-			if r.Description == "" {
-				t.Error("scan description should not be empty")
+			if r.Concurrency < 1 {
+				t.Error("scan concurrency should be >= 1")
 			}
 		}
 	}
 	if !found {
 		t.Errorf("scan not found in JSON output: %s", output)
-	}
-}
-
-func TestJobsList_extractDescription(t *testing.T) {
-	tmp := t.TempDir()
-
-	cases := []struct {
-		content string
-		want    string
-	}{
-		{"# Heading\n\nFirst real line.\n", "First real line."},
-		{"First line no heading.\n", "First line no heading."},
-		{"\n\n# H1\n\nAfter blank.\n", "After blank."},
-		{"# H1\n## H2\n\nContent here.\n", "Content here."},
-		{"", ""},
-	}
-
-	for _, tc := range cases {
-		f := filepath.Join(tmp, "test.md")
-		os.WriteFile(f, []byte(tc.content), 0o644)
-		got := extractDescription(f)
-		if got != tc.want {
-			t.Errorf("extractDescription(%q): got %q, want %q", tc.content, got, tc.want)
-		}
 	}
 }
