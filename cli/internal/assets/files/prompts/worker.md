@@ -31,10 +31,11 @@ Pick the highest-scored item that does not already have an open PR or active bra
 
 Remove the claimed item from `queue.json` immediately (write the updated file back before starting work).
 
-**Immediately label the claimed issue as in-progress** to prevent other workers from picking it up:
+**Immediately label the claimed issue as in-progress** and record it in the work DB:
 
 ```sh
 gh issue edit <number> --repo <repo> --add-label "in-progress"
+studio work update <repo>#<number> --status in_progress
 ```
 
 ---
@@ -72,12 +73,13 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
    - Type check clean (if applicable)
    - Lint clean (if applicable)
 8. Self-review: `git diff HEAD` — no debug logs, no accidental regressions.
-9. Create PR:
+9. Create PR and record completion:
    ```sh
-   gh pr create --repo <repo> \
+   PR_URL=$(gh pr create --repo <repo> \
      --title "fix(#<number>): <issue title>" \
      --head issue/<number> \
-     --body "Closes #<number>\n\n<brief summary of changes>"
+     --body "Closes #<number>\n\n<brief summary of changes>")
+   studio work update <repo>#<number> --status done --pr-url "$PR_URL"
    ```
 
 ---

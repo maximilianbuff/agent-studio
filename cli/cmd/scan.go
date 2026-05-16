@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
+	"github.com/maximilianbuff/agent-studio/internal/db"
 	"github.com/maximilianbuff/agent-studio/internal/queue"
 	"github.com/maximilianbuff/agent-studio/internal/scanner"
 	"github.com/spf13/cobra"
@@ -40,8 +41,17 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Open DB — non-fatal: scan still works without it.
+	d, dbErr := db.Open()
+	if dbErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warn: DB unavailable: %v\n", dbErr)
+	}
+	if d != nil {
+		defer d.Close()
+	}
+
 	fmt.Fprintf(out, "Scanning %d repo(s)...\n", enabled)
-	items, err := scanner.Run(cfg)
+	items, err := scanner.Run(cfg, d)
 	if err != nil {
 		return err
 	}
@@ -49,14 +59,19 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	if len(items) == 0 {
 		fmt.Fprintln(out, "No actionable items found.")
 	} else {
-		fmt.Fprintf(out, "%-6s  %-32s  %s\n", "SCORE", "REPO", "ITEM")
-		fmt.Fprintf(out, "%-6s  %-32s  %s\n", "-----", "----", "----")
+		fmt.Fprintf(out, "%-6s  %-8s  %-32s  %s\n", "SCORE", "TYPE", "REPO", "ITEM")
+		fmt.Fprintf(out, "%-6s  %-8s  %-32s  %s\n", "-----", "----", "----", "----")
 		for _, item := range items {
 			title := item.Title
-			if len(title) > 50 {
-				title = title[:47] + "..."
+			if len(title) > 48 {
+				title = title[:45] + "..."
 			}
-			fmt.Fprintf(out, "%-6d  %-32s  #%d %s\n", item.Score, item.Repo, item.Number, title)
+			issueType := item.IssueType
+			if issueType == "" {
+				issueType = "-"
+			}
+			fmt.Fprintf(out, "%-6d  %-8s  %-32s  #%d %s\n",
+				item.Score, issueType, item.Repo, item.Number, title)
 		}
 	}
 

@@ -11,5 +11,14 @@
     "regression": 7
   },
   "skip_labels": ["wontfix", "duplicate", "on-hold", "in-progress"],
-  "min_score": 0
+  "min_score": 0,
+  "issue_type_weights": {
+    "security":      3.0,
+    "critical":      3.0,
+    "bug":           2.0,
+    "fix":           1.5,
+    "feature":       1.0,
+    "enhancement":   1.0,
+    "documentation": 0.5
+  }
 }

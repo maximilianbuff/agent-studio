@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
+	"github.com/maximilianbuff/agent-studio/internal/db"
 	"github.com/maximilianbuff/agent-studio/internal/queue"
 )
 
@@ -26,14 +27,16 @@ type ghLabel struct{ Name string `json:"name"` }
 type ghUser struct{ Login string `json:"login"` }
 
 // Run scans all configured repos and returns scored queue items, sorted by score desc.
-func Run(cfg config.Config) ([]queue.Item, error) {
+// d may be nil — DB recording is skipped when absent.
+func Run(cfg config.Config, d *db.DB) ([]queue.Item, error) {
+	typeWeights := cfg.EffectiveIssueTypeWeights()
 	var items []queue.Item
 
 	for _, repo := range cfg.Repos {
 		if repo.Disabled {
 			continue
 		}
-		got, err := scanRepo(cfg, repo)
+		got, err := scanRepo(cfg, typeWeights, repo)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", repo.Repo, err)
 		}
@@ -46,16 +49,21 @@ func Run(cfg config.Config) ([]queue.Item, error) {
 	}
 
 	slices.SortFunc(items, func(a, b queue.Item) int { return b.Score - a.Score })
+
+	if d != nil {
+		recordItems(d, items)
+	}
+
 	return items, nil
 }
 
-func scanRepo(cfg config.Config, repo config.RepoEntry) ([]queue.Item, error) {
+func scanRepo(cfg config.Config, typeWeights map[string]float64, repo config.RepoEntry) ([]queue.Item, error) {
 	issues, err := listIssues(repo.Repo)
 	if err != nil {
 		return nil, err
 	}
 
-	// Single call to get all open PR head branches — avoids N+1 per issue.
+	// Single call — avoids N+1 per issue.
 	activeBranches, err := openPRBranches(repo.Repo)
 	if err != nil {
 		return nil, err
@@ -79,12 +87,22 @@ func scanRepo(cfg config.Config, repo config.RepoEntry) ([]queue.Item, error) {
 		if activeBranches[fmt.Sprintf("issue/%d", issue.Number)] {
 			continue
 		}
-		score := scoreIssue(cfg, issue, weight)
+
+		issueType := detectType(typeWeights, issue.Labels)
+		typeMultiplier := typeWeights[issueType]
+		if typeMultiplier <= 0 {
+			typeMultiplier = 1.0
+		}
+
+		base := labelScore(cfg, issue) + keywordScore(cfg, issue)
+		score := int(float64(base) * typeMultiplier * weight)
 		if score < cfg.MinScore {
 			continue
 		}
+
 		items = append(items, queue.Item{
 			Type:       "issue",
+			IssueType:  issueType,
 			Repo:       repo.Repo,
 			Number:     issue.Number,
 			Title:      issue.Title,
@@ -94,6 +112,17 @@ func scanRepo(cfg config.Config, repo config.RepoEntry) ([]queue.Item, error) {
 		})
 	}
 	return items, nil
+}
+
+// detectType picks the label with the highest type weight.
+func detectType(typeWeights map[string]float64, labels []ghLabel) string {
+	best, bestW := "", 0.0
+	for _, l := range labels {
+		if w, ok := typeWeights[l.Name]; ok && w > bestW {
+			best, bestW = l.Name, w
+		}
+	}
+	return best
 }
 
 func shouldSkip(cfg config.Config, skipSet map[string]bool, issue ghIssue) bool {
@@ -113,20 +142,23 @@ func shouldSkip(cfg config.Config, skipSet map[string]bool, issue ghIssue) bool 
 	return false
 }
 
-func scoreIssue(cfg config.Config, issue ghIssue, weight float64) int {
-	base := 0
+func labelScore(cfg config.Config, issue ghIssue) int {
+	total := 0
 	for _, l := range issue.Labels {
-		if s, ok := cfg.Labels[l.Name]; ok {
-			base += s
-		}
+		total += cfg.Labels[l.Name]
 	}
+	return total
+}
+
+func keywordScore(cfg config.Config, issue ghIssue) int {
 	text := strings.ToLower(issue.Title + " " + issue.Body)
+	total := 0
 	for kw, s := range cfg.Keywords {
 		if strings.Contains(text, strings.ToLower(kw)) {
-			base += s
+			total += s
 		}
 	}
-	return int(float64(base) * weight)
+	return total
 }
 
 func listIssues(repo string) ([]ghIssue, error) {
@@ -143,7 +175,7 @@ func listIssues(repo string) ([]ghIssue, error) {
 	return issues, json.Unmarshal(out, &issues)
 }
 
-// openPRBranches returns a set of head branch names for all open PRs in the repo.
+// openPRBranches returns a set of head branch names for all open PRs.
 func openPRBranches(repo string) (map[string]bool, error) {
 	out, err := gh("pr", "list",
 		"--repo", repo,
@@ -218,20 +250,29 @@ func scanOwnPRs(cfg config.Config) ([]queue.Item, error) {
 	return items, nil
 }
 
+// recordItems upserts all scanned items and records a "queued" event for new ones.
+func recordItems(d *db.DB, items []queue.Item) {
+	for _, item := range items {
+		id, err := d.UpsertItem(item.Repo, item.Number, item.IssueType, item.Title, item.Score)
+		if err != nil {
+			continue
+		}
+		// Only record queued event for items first seen now (score/type may update).
+		_ = d.AddEvent(id, "queued", "")
+	}
+}
+
 func gh(args ...string) ([]byte, error) {
 	out, err := exec.Command("gh", args...).Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("gh %s: %s", strings.Join(args[:min(2, len(args))], " "), strings.TrimSpace(string(ee.Stderr)))
+			n := 2
+			if len(args) < n {
+				n = len(args)
+			}
+			return nil, fmt.Errorf("gh %s: %s", strings.Join(args[:n], " "), strings.TrimSpace(string(ee.Stderr)))
 		}
-		return nil, fmt.Errorf("gh %s: %w", strings.Join(args[:min(2, len(args))], " "), err)
+		return nil, fmt.Errorf("gh: %w", err)
 	}
 	return out, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

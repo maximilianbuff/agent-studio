@@ -10,7 +10,8 @@ import (
 
 // Item represents a single work item in the queue.
 type Item struct {
-	Type       string  `json:"type"`
+	Type       string  `json:"type"`        // "issue" or "pr_review"
+	IssueType  string  `json:"issue_type,omitempty"` // detected label type: bug, feature, security, …
 	Repo       string  `json:"repo"`
 	Number     int     `json:"number"`
 	Title      string  `json:"title"`

@@ -25,17 +25,41 @@ type JobConfig struct {
 	Disabled    bool   `json:"disabled,omitempty"`
 }
 
+// DefaultIssueTypeWeights are the built-in multipliers applied on top of label/keyword scores.
+var DefaultIssueTypeWeights = map[string]float64{
+	"security":      3.0,
+	"critical":      3.0,
+	"bug":           2.0,
+	"fix":           1.5,
+	"feature":       1.0,
+	"enhancement":   1.0,
+	"documentation": 0.5,
+}
+
 // Config is the full studio configuration.
 type Config struct {
-	MyLogin         string                `json:"my_login"`
-	Repos           []RepoEntry           `json:"repos"`
-	Labels          map[string]int        `json:"labels"`
-	Keywords        map[string]int        `json:"keywords"`
-	SkipLabels      []string              `json:"skip_labels"`
-	MinScore        int                   `json:"min_score"`
-	Jobs            map[string]JobConfig  `json:"jobs,omitempty"`
-	AuthMode        string                `json:"auth_mode,omitempty"`
-	AnthropicAPIKey string                `json:"anthropic_api_key,omitempty"`
+	MyLogin          string             `json:"my_login"`
+	Repos            []RepoEntry        `json:"repos"`
+	Labels           map[string]int     `json:"labels"`
+	Keywords         map[string]int     `json:"keywords"`
+	SkipLabels       []string           `json:"skip_labels"`
+	MinScore         int                `json:"min_score"`
+	Jobs             map[string]JobConfig  `json:"jobs,omitempty"`
+	AuthMode         string             `json:"auth_mode,omitempty"`
+	AnthropicAPIKey  string             `json:"anthropic_api_key,omitempty"`
+	IssueTypeWeights map[string]float64 `json:"issue_type_weights,omitempty"`
+}
+
+// EffectiveIssueTypeWeights returns configured weights merged over built-in defaults.
+func (c Config) EffectiveIssueTypeWeights() map[string]float64 {
+	merged := make(map[string]float64, len(DefaultIssueTypeWeights))
+	for k, v := range DefaultIssueTypeWeights {
+		merged[k] = v
+	}
+	for k, v := range c.IssueTypeWeights {
+		merged[k] = v
+	}
+	return merged
 }
 
 // JobInterval returns the cron schedule for job, falling back to built-in defaults.
@@ -160,6 +184,16 @@ func Set(c *Config, key, value string) error {
 		c.AuthMode = value
 	case key == "anthropic_api_key":
 		c.AnthropicAPIKey = value
+	case strings.HasPrefix(key, "issue_type_weights."):
+		label := strings.TrimPrefix(key, "issue_type_weights.")
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || f < 0 {
+			return fmt.Errorf("issue_type_weights value must be a non-negative float")
+		}
+		if c.IssueTypeWeights == nil {
+			c.IssueTypeWeights = map[string]float64{}
+		}
+		c.IssueTypeWeights[label] = f
 	case strings.HasPrefix(key, "labels."):
 		label := strings.TrimPrefix(key, "labels.")
 		n, err := strconv.Atoi(value)

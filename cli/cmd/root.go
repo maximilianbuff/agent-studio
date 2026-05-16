@@ -42,6 +42,7 @@ func init() {
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(scanCmd)
+	rootCmd.AddCommand(workCmd)
 	rootCmd.AddCommand(jobsCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(queueCmd)

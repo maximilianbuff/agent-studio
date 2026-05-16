@@ -1,3 +1,5 @@
 queue.json
 *.lock
 logs/
+studio.db
+studio.db-*
