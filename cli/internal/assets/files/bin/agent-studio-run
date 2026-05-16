@@ -52,16 +52,16 @@ if [[ "$JOB" == "scan" ]]; then
   exec studio scan
 fi
 
-# --- For all other jobs (worker etc.): check queue before starting Claude ---
+# --- For worker jobs: prioritize DB → queue.json, then check count ---
 if [[ "$JOB" == "worker" ]]; then
-  QUEUE_FILE="$STUDIO_HOME/queue.json"
-  if [[ ! -f "$QUEUE_FILE" ]]; then
-    echo "[agent-studio-run] queue.json not found — run 'studio scan' first" >&2
+  if ! studio work prioritize 2>&1 | sed 's/^/[agent-studio-run] /'; then
+    echo "[agent-studio-run] prioritize failed, skipping worker" >&2
     exit 0
   fi
+  QUEUE_FILE="$STUDIO_HOME/queue.json"
   QUEUE_COUNT=$(jq '(.items // .) | length' "$QUEUE_FILE" 2>/dev/null || echo "0")
   if [[ "$QUEUE_COUNT" -eq 0 ]]; then
-    echo "[agent-studio-run] queue empty, skipping worker" >&2
+    echo "[agent-studio-run] queue empty after prioritize, skipping worker" >&2
     exit 0
   fi
   echo "[agent-studio-run] queue has $QUEUE_COUNT item(s), starting worker"
