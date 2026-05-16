@@ -29,8 +29,26 @@ CREATE TABLE IF NOT EXISTS events (
 	pr_url  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS prs (
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	repo            TEXT    NOT NULL,
+	number          INTEGER NOT NULL,
+	author          TEXT    NOT NULL DEFAULT '',
+	title           TEXT    NOT NULL DEFAULT '',
+	url             TEXT    NOT NULL DEFAULT '',
+	head_ref        TEXT    NOT NULL DEFAULT '',
+	state           TEXT    NOT NULL DEFAULT '',
+	mergeable       TEXT    NOT NULL DEFAULT '',
+	review_decision TEXT    NOT NULL DEFAULT '',
+	ci_status       TEXT    NOT NULL DEFAULT '',
+	merged_at       TEXT    NOT NULL DEFAULT '',
+	last_seen       DATETIME DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(repo, number)
+);
+
 CREATE INDEX IF NOT EXISTS events_item_id ON events(item_id);
 CREATE INDEX IF NOT EXISTS events_status   ON events(status);
+CREATE INDEX IF NOT EXISTS prs_author      ON prs(author);
 `
 
 // DB wraps a SQLite connection.
@@ -142,6 +160,104 @@ func (d *DB) ListItems(limit int) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// ListPendingIssues returns items whose latest event status is not pr_opened, merged, or closed.
+// These are candidates for the worker queue.
+func (d *DB) ListPendingIssues(limit int) ([]Item, error) {
+	rows, err := d.db.Query(`
+		SELECT i.id, i.repo, i.number, COALESCE(i.type,''), i.title, i.score, i.first_seen,
+		       COALESCE(e.status,''), COALESCE(e.pr_url,'')
+		FROM items i
+		LEFT JOIN events e ON e.id = (
+			SELECT id FROM events WHERE item_id = i.id ORDER BY at DESC LIMIT 1
+		)
+		WHERE COALESCE(e.status,'') NOT IN ('pr_opened','merged','closed')
+		ORDER BY i.score DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Item
+	for rows.Next() {
+		var it Item
+		if err := rows.Scan(&it.ID, &it.Repo, &it.Number, &it.Type, &it.Title,
+			&it.Score, &it.FirstSeen, &it.Status, &it.PRUrl); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+// PRRecord holds the current state of a pull request as observed by the scanner.
+type PRRecord struct {
+	Repo           string
+	Number         int
+	Author         string
+	Title          string
+	URL            string
+	HeadRef        string
+	State          string // OPEN, CLOSED, MERGED
+	Mergeable      string // MERGEABLE, CONFLICTING, UNKNOWN
+	ReviewDecision string // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
+	CIStatus       string // SUCCESS, FAILURE, ERROR, PENDING, ""
+	MergedAt       string
+}
+
+// UpsertPR inserts or updates a PR record. Called by the scanner.
+func (d *DB) UpsertPR(pr PRRecord) error {
+	_, err := d.db.Exec(`
+		INSERT INTO prs (repo, number, author, title, url, head_ref, state, mergeable,
+		                 review_decision, ci_status, merged_at, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		ON CONFLICT(repo, number) DO UPDATE SET
+			author          = excluded.author,
+			title           = excluded.title,
+			url             = excluded.url,
+			head_ref        = excluded.head_ref,
+			state           = excluded.state,
+			mergeable       = excluded.mergeable,
+			review_decision = excluded.review_decision,
+			ci_status       = excluded.ci_status,
+			merged_at       = excluded.merged_at,
+			last_seen       = excluded.last_seen
+	`, pr.Repo, pr.Number, pr.Author, pr.Title, pr.URL, pr.HeadRef,
+		pr.State, pr.Mergeable, pr.ReviewDecision, pr.CIStatus, pr.MergedAt)
+	return err
+}
+
+// ListPRsNeedingAttention returns open PRs authored by myLogin that need action.
+// Status is CONFLICTING, CHANGES_REQUESTED, or CI failing.
+func (d *DB) ListPRsNeedingAttention(myLogin string) ([]PRRecord, error) {
+	rows, err := d.db.Query(`
+		SELECT repo, number, author, title, url, head_ref, state,
+		       mergeable, review_decision, ci_status, merged_at
+		FROM prs
+		WHERE author = ?
+		  AND state = 'OPEN'
+		  AND (mergeable = 'CONFLICTING'
+		       OR review_decision = 'CHANGES_REQUESTED'
+		       OR ci_status IN ('FAILURE','ERROR'))
+		ORDER BY last_seen DESC
+	`, myLogin)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var prs []PRRecord
+	for rows.Next() {
+		var pr PRRecord
+		if err := rows.Scan(&pr.Repo, &pr.Number, &pr.Author, &pr.Title, &pr.URL,
+			&pr.HeadRef, &pr.State, &pr.Mergeable, &pr.ReviewDecision,
+			&pr.CIStatus, &pr.MergedAt); err != nil {
+			return nil, err
+		}
+		prs = append(prs, pr)
+	}
+	return prs, rows.Err()
+}
+
 // RepoStat holds per-repo aggregate statistics.
 type RepoStat struct {
 	Repo       string
@@ -156,12 +272,12 @@ func (d *DB) RepoStats() ([]RepoStat, error) {
 	rows, err := d.db.Query(`
 		SELECT
 			i.repo,
-			COUNT(DISTINCT i.id)                                                           AS queued,
-			COUNT(DISTINCT CASE WHEN e.status IN ('done','merged') THEN i.id END)          AS done,
-			COUNT(DISTINCT CASE WHEN e.status = 'failed'           THEN i.id END)          AS failed,
-			AVG(CASE WHEN e.status IN ('done','merged') THEN
+			COUNT(DISTINCT i.id)                                                                   AS queued,
+			COUNT(DISTINCT CASE WHEN e.status IN ('pr_opened','merged') THEN i.id END)             AS done,
+			COUNT(DISTINCT CASE WHEN e.status = 'failed'                THEN i.id END)             AS failed,
+			AVG(CASE WHEN e.status IN ('pr_opened','merged') THEN
 				(julianday(e.at) - julianday(i.first_seen)) * 1440
-			END)                                                                           AS avg_minutes
+			END)                                                                                   AS avg_minutes
 		FROM items i
 		LEFT JOIN events e ON e.item_id = i.id
 		GROUP BY i.repo

@@ -2,17 +2,26 @@ package cmd
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/maximilianbuff/agent-studio/internal/config"
 	"github.com/maximilianbuff/agent-studio/internal/db"
+	"github.com/maximilianbuff/agent-studio/internal/queue"
 	"github.com/spf13/cobra"
 )
 
 var workCmd = &cobra.Command{
 	Use:   "work",
-	Short: "View and update work item history",
+	Short: "View, update, and prioritize work items",
+}
+
+var workPrioritizeCmd = &cobra.Command{
+	Use:   "prioritize",
+	Short: "Build queue.json from DB for the worker agent (pure Go — no AI)",
+	RunE:  runWorkPrioritize,
 }
 
 var workListCmd = &cobra.Command{
@@ -43,11 +52,106 @@ var workUpdateCmd = &cobra.Command{
 
 func init() {
 	workListCmd.Flags().IntP("limit", "n", 20, "Number of items to show")
-	workUpdateCmd.Flags().String("status", "", "New status: queued, in_progress, done, failed, merged")
+	workUpdateCmd.Flags().String("status", "", "New status: queued, in_progress, pr_opened, changes_requested, conflicting, ci_failing, merged, closed, failed")
 	workUpdateCmd.Flags().String("pr-url", "", "Pull request URL (for done/merged status)")
 	_ = workUpdateCmd.MarkFlagRequired("status")
 
-	workCmd.AddCommand(workListCmd, workStatsCmd, workShowCmd, workUpdateCmd)
+	workCmd.AddCommand(workListCmd, workStatsCmd, workShowCmd, workUpdateCmd, workPrioritizeCmd)
+}
+
+// prAttentionScore returns the score for a PR needing worker attention (0 = skip).
+// Conflicting > changes requested > CI failing — all multiplied by repo weight.
+func prAttentionScore(pr db.PRRecord, repoWeights map[string]float64) int {
+	w := repoWeights[pr.Repo]
+	if w <= 0 {
+		w = 1.0
+	}
+	switch {
+	case pr.Mergeable == "CONFLICTING":
+		return int(40 * w)
+	case pr.ReviewDecision == "CHANGES_REQUESTED":
+		return int(30 * w)
+	case pr.CIStatus == "FAILURE" || pr.CIStatus == "ERROR":
+		return int(25 * w)
+	}
+	return 0
+}
+
+func runWorkPrioritize(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	d, err := db.Open()
+	if err != nil {
+		return fmt.Errorf("opening DB: %w", err)
+	}
+	defer d.Close()
+
+	repoWeights := make(map[string]float64, len(cfg.Repos))
+	for _, r := range cfg.Repos {
+		if r.Priority > 0 {
+			repoWeights[r.Repo] = r.Priority
+		}
+	}
+
+	// Issues not yet worked (status not pr_opened/merged/closed).
+	pending, err := d.ListPendingIssues(500)
+	if err != nil {
+		return err
+	}
+
+	var items []queue.Item
+	for _, it := range pending {
+		items = append(items, queue.Item{
+			Type:      "issue",
+			IssueType: it.Type,
+			Repo:      it.Repo,
+			Number:    it.Number,
+			Title:     it.Title,
+			Score:     it.Score,
+		})
+	}
+
+	// Own PRs needing attention (conflicting, changes requested, CI failing).
+	if cfg.MyLogin != "" {
+		prs, err := d.ListPRsNeedingAttention(cfg.MyLogin)
+		if err != nil {
+			return err
+		}
+		for _, pr := range prs {
+			score := prAttentionScore(pr, repoWeights)
+			if score == 0 {
+				continue
+			}
+			items = append(items, queue.Item{
+				Type:   "pr_review",
+				Repo:   pr.Repo,
+				Number: pr.Number,
+				Title:  pr.Title,
+				URL:    pr.URL,
+				Score:  score,
+			})
+		}
+	}
+
+	slices.SortFunc(items, func(a, b queue.Item) int { return b.Score - a.Score })
+
+	q := queue.Queue{
+		ScannedAt: time.Now().UTC().Format(time.RFC3339),
+		Items:     items,
+	}
+	if err := queue.Save(q); err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Queue built: %d item(s)\n", len(items))
+	for _, it := range items {
+		fmt.Fprintf(out, "  [%d] %s  %s #%d %s\n", it.Score, it.Type, it.Repo, it.Number, it.Title)
+	}
+	return nil
 }
 
 func runWorkList(cmd *cobra.Command, _ []string) error {
@@ -183,10 +287,12 @@ func runWorkUpdate(cmd *cobra.Command, args []string) error {
 	prURL, _ := cmd.Flags().GetString("pr-url")
 
 	validStatuses := map[string]bool{
-		"queued": true, "in_progress": true, "done": true, "failed": true, "merged": true,
+		"queued": true, "in_progress": true, "pr_opened": true,
+		"changes_requested": true, "conflicting": true, "ci_failing": true,
+		"merged": true, "closed": true, "failed": true,
 	}
 	if !validStatuses[status] {
-		return fmt.Errorf("invalid status %q — valid: queued, in_progress, done, failed, merged", status)
+		return fmt.Errorf("invalid status %q — valid: queued, in_progress, pr_opened, changes_requested, conflicting, ci_failing, merged, closed, failed", status)
 	}
 
 	d, err := db.Open()

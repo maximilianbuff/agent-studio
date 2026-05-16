@@ -24,10 +24,9 @@ Only proceed to Phase 1 if all your open PRs are green (or there are none).
 ## Phase 1 — Claim Work
 
 Read `~/.agent-studio/queue.json` (or `$AGENT_STUDIO_HOME/queue.json`).
+The queue is pre-built and scored by `studio work prioritize` — pick the first (highest-scored) item.
 
-Pick the highest-scored item that does not already have an open PR or active branch.
 - If the queue is empty, exit cleanly with: `No work in queue.`
-- If all items are already in progress, exit cleanly with: `All queued items already in progress.`
 
 Remove the claimed item from `queue.json` immediately (write the updated file back before starting work).
 
@@ -79,7 +78,7 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
      --title "fix(#<number>): <issue title>" \
      --head issue/<number> \
      --body "Closes #<number>\n\n<brief summary of changes>")
-   studio work update <repo>#<number> --status done --pr-url "$PR_URL"
+   studio work update <repo>#<number> --status pr_opened --pr-url "$PR_URL"
    ```
 
 ---

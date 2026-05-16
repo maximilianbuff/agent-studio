@@ -2,23 +2,21 @@ package cmd
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
 	"github.com/maximilianbuff/agent-studio/internal/db"
-	"github.com/maximilianbuff/agent-studio/internal/queue"
 	"github.com/maximilianbuff/agent-studio/internal/scanner"
 	"github.com/spf13/cobra"
 )
 
 var scanCmd = &cobra.Command{
 	Use:   "scan",
-	Short: "Scan configured repos and update the work queue (no AI — pure gh calls)",
+	Short: "Scan configured repos and update the work DB (no AI — pure gh calls)",
 	RunE:  runScan,
 }
 
 func init() {
-	scanCmd.Flags().Bool("dry-run", false, "Print what would be queued without writing queue.json")
+	scanCmd.Flags().Bool("dry-run", false, "Print what would be stored without writing to DB")
 }
 
 func runScan(cmd *cobra.Command, _ []string) error {
@@ -41,13 +39,17 @@ func runScan(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Open DB — non-fatal: scan still works without it.
-	d, dbErr := db.Open()
-	if dbErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: DB unavailable: %v\n", dbErr)
-	}
-	if d != nil {
-		defer d.Close()
+	// Open DB — skip when dry-run; warn and continue otherwise.
+	var d *db.DB
+	if !dryRun {
+		var dbErr error
+		d, dbErr = db.Open()
+		if dbErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warn: DB unavailable: %v\n", dbErr)
+		}
+		if d != nil {
+			defer d.Close()
+		}
 	}
 
 	fmt.Fprintf(out, "Scanning %d repo(s)...\n", enabled)
@@ -57,10 +59,10 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(items) == 0 {
-		fmt.Fprintln(out, "No actionable items found.")
+		fmt.Fprintln(out, "No actionable issues found.")
 	} else {
-		fmt.Fprintf(out, "%-6s  %-8s  %-32s  %s\n", "SCORE", "TYPE", "REPO", "ITEM")
-		fmt.Fprintf(out, "%-6s  %-8s  %-32s  %s\n", "-----", "----", "----", "----")
+		fmt.Fprintf(out, "%-6s  %-8s  %-32s  %s\n", "SCORE", "TYPE", "REPO", "ISSUE")
+		fmt.Fprintf(out, "%-6s  %-8s  %-32s  %s\n", "-----", "----", "----", "-----")
 		for _, item := range items {
 			title := item.Title
 			if len(title) > 48 {
@@ -76,16 +78,15 @@ func runScan(cmd *cobra.Command, _ []string) error {
 	}
 
 	if dryRun {
+		fmt.Fprintln(out, "\n(dry-run — no DB writes)")
 		return nil
 	}
 
-	q := queue.Queue{
-		ScannedAt: time.Now().UTC().Format(time.RFC3339),
-		Items:     items,
+	suffix := ""
+	if d == nil {
+		suffix = " (DB unavailable — run 'studio work prioritize' after DB is fixed)"
 	}
-	if err := queue.Save(q); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "\nQueue updated: %d item(s), scanned at %s\n", len(items), q.ScannedAt)
+	fmt.Fprintf(out, "\nDB updated: %d issue(s) stored%s\n", len(items), suffix)
+	fmt.Fprintln(out, "Run 'studio work prioritize' to build the worker queue.")
 	return nil
 }
