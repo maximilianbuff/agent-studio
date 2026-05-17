@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
+	"github.com/maximilianbuff/agent-studio/internal/crontab"
 	"github.com/maximilianbuff/agent-studio/internal/gitops"
 	"github.com/maximilianbuff/agent-studio/internal/home"
 	"github.com/spf13/cobra"
@@ -114,6 +115,10 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	case strings.HasPrefix(key, "jobs.") && strings.HasSuffix(key, ".interval"):
 		job := strings.TrimSuffix(strings.TrimPrefix(key, "jobs."), ".interval")
 		val = c.JobInterval(job)
+	case key == "worker_interval":
+		val = c.JobInterval("worker")
+	case key == "scan_interval":
+		val = c.JobInterval("scan")
 	case key == "repomix_enabled":
 		if c.IsRepomixEnabled() {
 			val = "true"
@@ -121,7 +126,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 			val = "false"
 		}
 	default:
-		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, repomix_enabled, jobs.<job>.concurrency, jobs.<job>.interval", key)
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, repomix_enabled, worker_interval, scan_interval, jobs.<job>.concurrency, jobs.<job>.interval", key)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), val)
 	return nil
@@ -149,8 +154,37 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	commitConfig(fmt.Sprintf("config: set %s", args[0]))
+
+	switch args[0] {
+	case "worker_interval":
+		_ = applySchedule("worker", args[1])
+	case "scan_interval":
+		_ = applySchedule("scan", args[1])
+	}
+
 	fmt.Fprintf(cmd.OutOrStdout(), "ok  %s = %s\n", args[0], args[1])
 	return nil
+}
+
+// applySchedule updates a single job's schedule in the live crontab without
+// requiring a full re-install. Silently no-ops if no crontab block exists.
+func applySchedule(job, schedule string) error {
+	studioHome := home.Dir()
+	entries, err := crontab.GetEntries(crontab.DefaultRunCmd)
+	if err != nil {
+		return err
+	}
+	updated := false
+	for i, e := range entries {
+		if e.Job == job {
+			entries[i].Schedule = schedule
+			updated = true
+		}
+	}
+	if !updated {
+		return nil
+	}
+	return crontab.SetEntries(entries, studioHome, crontab.DefaultRunCmd, crontab.DefaultRunCmdStdin)
 }
 
 func runConfigReposAdd(cmd *cobra.Command, args []string) error {
