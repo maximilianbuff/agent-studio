@@ -60,7 +60,7 @@ func init() {
 }
 
 // prAttentionScore returns the priority score for an open PR.
-// All open PRs score at least a base value; problem states score higher.
+// Problem states and comments score higher; clean PRs with no comments score 1.
 func prAttentionScore(pr db.PRRecord, repoWeights map[string]float64) int {
 	w := repoWeights[pr.Repo]
 	if w <= 0 {
@@ -73,8 +73,10 @@ func prAttentionScore(pr db.PRRecord, repoWeights map[string]float64) int {
 		return int(30 * w)
 	case pr.CIStatus == "FAILURE" || pr.CIStatus == "ERROR":
 		return int(25 * w)
+	case pr.CommentCount > 0:
+		return int(15 * w)
 	default:
-		return int(10 * w)
+		return 1
 	}
 }
 

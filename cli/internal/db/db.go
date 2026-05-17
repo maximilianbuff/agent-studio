@@ -62,6 +62,12 @@ func Path() string {
 	return home.Path("studio.db")
 }
 
+// migrations are run after the base schema. Each is best-effort: "duplicate column"
+// errors are silently ignored so they're safe to re-run on existing DBs.
+var migrations = []string{
+	`ALTER TABLE prs ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0`,
+}
+
 // Open opens (or creates) the database and applies the schema.
 func Open() (*DB, error) {
 	d, err := sql.Open("sqlite", Path()+"?_journal=WAL&_timeout=5000")
@@ -71,6 +77,12 @@ func Open() (*DB, error) {
 	if _, err := d.Exec(schema); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("applying schema: %w", err)
+	}
+	for _, m := range migrations {
+		if _, err := d.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			d.Close()
+			return nil, fmt.Errorf("migration %q: %w", m, err)
+		}
 	}
 	return &DB{db: d}, nil
 }
@@ -204,14 +216,15 @@ type PRRecord struct {
 	ReviewDecision string // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
 	CIStatus       string // SUCCESS, FAILURE, ERROR, PENDING, ""
 	MergedAt       string
+	CommentCount   int
 }
 
 // UpsertPR inserts or updates a PR record. Called by the scanner.
 func (d *DB) UpsertPR(pr PRRecord) error {
 	_, err := d.db.Exec(`
 		INSERT INTO prs (repo, number, author, title, url, head_ref, state, mergeable,
-		                 review_decision, ci_status, merged_at, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		                 review_decision, ci_status, merged_at, comment_count, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 		ON CONFLICT(repo, number) DO UPDATE SET
 			author          = excluded.author,
 			title           = excluded.title,
@@ -222,9 +235,10 @@ func (d *DB) UpsertPR(pr PRRecord) error {
 			review_decision = excluded.review_decision,
 			ci_status       = excluded.ci_status,
 			merged_at       = excluded.merged_at,
+			comment_count   = excluded.comment_count,
 			last_seen       = excluded.last_seen
 	`, pr.Repo, pr.Number, pr.Author, pr.Title, pr.URL, pr.HeadRef,
-		pr.State, pr.Mergeable, pr.ReviewDecision, pr.CIStatus, pr.MergedAt)
+		pr.State, pr.Mergeable, pr.ReviewDecision, pr.CIStatus, pr.MergedAt, pr.CommentCount)
 	return err
 }
 
@@ -233,7 +247,7 @@ func (d *DB) UpsertPR(pr PRRecord) error {
 func (d *DB) ListOpenPRs(repos []string) ([]PRRecord, error) {
 	query := `
 		SELECT repo, number, author, title, url, head_ref, state,
-		       mergeable, review_decision, ci_status, merged_at
+		       mergeable, review_decision, ci_status, merged_at, comment_count
 		FROM prs
 		WHERE state = 'OPEN'`
 	var args []any
@@ -257,7 +271,7 @@ func (d *DB) ListOpenPRs(repos []string) ([]PRRecord, error) {
 		var pr PRRecord
 		if err := rows.Scan(&pr.Repo, &pr.Number, &pr.Author, &pr.Title, &pr.URL,
 			&pr.HeadRef, &pr.State, &pr.Mergeable, &pr.ReviewDecision,
-			&pr.CIStatus, &pr.MergedAt); err != nil {
+			&pr.CIStatus, &pr.MergedAt, &pr.CommentCount); err != nil {
 			return nil, err
 		}
 		prs = append(prs, pr)
