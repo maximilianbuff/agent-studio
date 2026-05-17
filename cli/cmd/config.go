@@ -114,8 +114,14 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	case strings.HasPrefix(key, "jobs.") && strings.HasSuffix(key, ".interval"):
 		job := strings.TrimSuffix(strings.TrimPrefix(key, "jobs."), ".interval")
 		val = c.JobInterval(job)
+	case key == "repomix_enabled":
+		if c.IsRepomixEnabled() {
+			val = "true"
+		} else {
+			val = "false"
+		}
 	default:
-		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, jobs.<job>.concurrency, jobs.<job>.interval", key)
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, repomix_enabled, jobs.<job>.concurrency, jobs.<job>.interval", key)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), val)
 	return nil

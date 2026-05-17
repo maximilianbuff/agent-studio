@@ -48,6 +48,16 @@ type Config struct {
 	AuthMode         string             `json:"auth_mode,omitempty"`
 	AnthropicAPIKey  string             `json:"anthropic_api_key,omitempty"`
 	IssueTypeWeights map[string]float64 `json:"issue_type_weights,omitempty"`
+	RepomixEnabled   *bool              `json:"repomix_enabled,omitempty"`
+}
+
+// IsRepomixEnabled reports whether repomix pre-context generation is enabled.
+// Defaults to true when not explicitly configured.
+func (c Config) IsRepomixEnabled() bool {
+	if c.RepomixEnabled != nil {
+		return *c.RepomixEnabled
+	}
+	return true
 }
 
 // EffectiveIssueTypeWeights returns configured weights merged over built-in defaults.
@@ -208,8 +218,19 @@ func Set(c *Config, key, value string) error {
 			return fmt.Errorf("keyword score must be an integer: %w", err)
 		}
 		c.Keywords[kw] = n
+	case key == "repomix_enabled":
+		switch value {
+		case "true", "1", "yes":
+			b := true
+			c.RepomixEnabled = &b
+		case "false", "0", "no":
+			b := false
+			c.RepomixEnabled = &b
+		default:
+			return fmt.Errorf("repomix_enabled must be true or false")
+		}
 	default:
-		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, labels.<label>, keywords.<word>", key)
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, repomix_enabled, labels.<label>, keywords.<word>", key)
 	}
 	return nil
 }

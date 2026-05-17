@@ -80,4 +80,41 @@ if [[ "$AUTH_MODE" == "api_key" ]]; then
   fi
 fi
 
-exec claude --dangerously-skip-permissions -p "$(cat "$PROMPT_FILE")"
+# --- Repomix pre-context (worker only) ---
+REPOMIX_CONTEXT=""
+if [[ "$JOB" == "worker" ]]; then
+  REPOMIX_ENABLED=$(studio config get repomix_enabled 2>/dev/null || echo "true")
+  if [[ "$REPOMIX_ENABLED" == "true" ]] && command -v npx &>/dev/null; then
+    FIRST_REPO=$(studio queue peek 2>/dev/null || echo "")
+    if [[ -n "$FIRST_REPO" ]]; then
+      REPO_SLUG="${FIRST_REPO//\//-}"
+      CACHE_DATE=$(date +%Y-%m-%d)
+      REPOMIX_CACHE="/tmp/repomix-${REPO_SLUG}-${CACHE_DATE}.txt"
+      REPO_NAME="${FIRST_REPO##*/}"
+      REPO_DIR="/tmp/agent-studio-work/${REPO_NAME}"
+      if [[ ! -f "$REPOMIX_CACHE" ]]; then
+        echo "[agent-studio-run] generating repomix context for $FIRST_REPO"
+        mkdir -p /tmp/agent-studio-work
+        git clone "https://github.com/$FIRST_REPO" "$REPO_DIR" 2>/dev/null \
+          || git -C "$REPO_DIR" pull --rebase 2>/dev/null || true
+        if [[ -d "$REPO_DIR" ]]; then
+          npx --yes repomix "$REPO_DIR" \
+            --output "$REPOMIX_CACHE" \
+            --ignore "node_modules,dist,*.lock,*.log,.git,coverage" \
+            2>/dev/null || true
+        fi
+      fi
+      if [[ -f "$REPOMIX_CACHE" ]]; then
+        echo "[agent-studio-run] injecting repomix context ($REPOMIX_CACHE)"
+        REPOMIX_CONTEXT="<repo-context repo=\"${FIRST_REPO}\" generated=\"${CACHE_DATE}\">
+$(cat "$REPOMIX_CACHE")
+</repo-context>
+
+"
+      fi
+    fi
+  fi
+fi
+
+PROMPT="$(cat "$PROMPT_FILE")"
+exec claude --dangerously-skip-permissions -p "${REPOMIX_CONTEXT}${PROMPT}"
