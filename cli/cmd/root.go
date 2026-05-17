@@ -51,4 +51,5 @@ func init() {
 	rootCmd.AddCommand(rollbackCmd)
 	rootCmd.AddCommand(diffCmd)
 	rootCmd.AddCommand(skillsCmd)
+	rootCmd.AddCommand(contextCmd)
 }
