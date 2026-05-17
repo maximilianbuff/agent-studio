@@ -4,6 +4,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/maximilianbuff/agent-studio/internal/home"
 	_ "modernc.org/sqlite"
@@ -227,20 +228,26 @@ func (d *DB) UpsertPR(pr PRRecord) error {
 	return err
 }
 
-// ListPRsNeedingAttention returns open PRs authored by myLogin that need action.
-// Status is CONFLICTING, CHANGES_REQUESTED, or CI failing.
-func (d *DB) ListPRsNeedingAttention(myLogin string) ([]PRRecord, error) {
-	rows, err := d.db.Query(`
+// ListOpenPRs returns all open PRs for the given repos, ordered by state severity then last seen.
+// repos is a slice of "owner/repo" strings; passing nil returns all repos.
+func (d *DB) ListOpenPRs(repos []string) ([]PRRecord, error) {
+	query := `
 		SELECT repo, number, author, title, url, head_ref, state,
 		       mergeable, review_decision, ci_status, merged_at
 		FROM prs
-		WHERE author = ?
-		  AND state = 'OPEN'
-		  AND (mergeable = 'CONFLICTING'
-		       OR review_decision = 'CHANGES_REQUESTED'
-		       OR ci_status IN ('FAILURE','ERROR'))
-		ORDER BY last_seen DESC
-	`, myLogin)
+		WHERE state = 'OPEN'`
+	var args []any
+	if len(repos) > 0 {
+		placeholders := make([]string, len(repos))
+		for i, r := range repos {
+			placeholders[i] = "?"
+			args = append(args, r)
+		}
+		query += " AND repo IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	query += " ORDER BY last_seen DESC"
+
+	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
