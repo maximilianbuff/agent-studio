@@ -170,7 +170,10 @@ func copyDefaults(out io.Writer, studioHome string, dryRun, force bool) error {
 		}
 		dst := filepath.Join(studioHome, rel)
 
-		if !force {
+		// bin/ and prompts/ are version-managed — always overwrite so updates ship on install.
+		isVersionManaged := strings.HasPrefix(rel, "bin"+string(filepath.Separator)) ||
+			strings.HasPrefix(rel, "prompts"+string(filepath.Separator))
+		if !force && !isVersionManaged {
 			if _, err := os.Stat(dst); err == nil {
 				line(out, "skip    %s (already exists)", dst)
 				return nil
