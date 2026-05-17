@@ -34,7 +34,7 @@ type ghPR struct {
 	HeadRefName    string `json:"headRefName"`    // e.g. "issue/42"
 	Mergeable      string `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN
 	ReviewDecision string `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
-	Comments       int    `json:"comments"`
+	Comments       []struct{} `json:"comments"`
 	Author         struct {
 		Login string `json:"login"`
 	} `json:"author"`
@@ -218,7 +218,7 @@ func scanRepoPRs(d *db.DB, repo string) error {
 			ReviewDecision: pr.ReviewDecision,
 			CIStatus:       aggregateCIStatus(pr),
 			MergedAt:       pr.MergedAt,
-			CommentCount:   pr.Comments,
+			CommentCount:   len(pr.Comments),
 		})
 	}
 	return nil
