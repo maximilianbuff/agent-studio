@@ -50,6 +50,19 @@ CREATE TABLE IF NOT EXISTS prs (
 CREATE INDEX IF NOT EXISTS events_item_id ON events(item_id);
 CREATE INDEX IF NOT EXISTS events_status   ON events(status);
 CREATE INDEX IF NOT EXISTS prs_author      ON prs(author);
+
+CREATE TABLE IF NOT EXISTS runs (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	job           TEXT    NOT NULL,
+	started_at    DATETIME NOT NULL,
+	ended_at      DATETIME NOT NULL,
+	duration_secs INTEGER NOT NULL DEFAULT 0,
+	input_tokens  INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	exit_code     INTEGER NOT NULL DEFAULT 0,
+	summary       TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS runs_started_at ON runs(started_at);
 `
 
 // DB wraps a SQLite connection.
@@ -386,4 +399,71 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// RunRecord is a single worker run.
+type RunRecord struct {
+	ID           int64
+	Job          string
+	StartedAt    string
+	EndedAt      string
+	DurationSecs int
+	InputTokens  int
+	OutputTokens int
+	ExitCode     int
+	Summary      string
+}
+
+// InsertRun persists a completed run.
+func (d *DB) InsertRun(r RunRecord) (int64, error) {
+	res, err := d.db.Exec(`
+		INSERT INTO runs (job, started_at, ended_at, duration_secs,
+		                  input_tokens, output_tokens, exit_code, summary)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, r.Job, r.StartedAt, r.EndedAt, r.DurationSecs,
+		r.InputTokens, r.OutputTokens, r.ExitCode, r.Summary)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListRuns returns the most recent runs, newest first.
+func (d *DB) ListRuns(limit int) ([]RunRecord, error) {
+	rows, err := d.db.Query(`
+		SELECT id, job, started_at, ended_at, duration_secs,
+		       input_tokens, output_tokens, exit_code, summary
+		FROM runs
+		ORDER BY started_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []RunRecord
+	for rows.Next() {
+		var r RunRecord
+		if err := rows.Scan(&r.ID, &r.Job, &r.StartedAt, &r.EndedAt, &r.DurationSecs,
+			&r.InputTokens, &r.OutputTokens, &r.ExitCode, &r.Summary); err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
+// GetRun returns a single run by ID.
+func (d *DB) GetRun(id int64) (*RunRecord, error) {
+	var r RunRecord
+	err := d.db.QueryRow(`
+		SELECT id, job, started_at, ended_at, duration_secs,
+		       input_tokens, output_tokens, exit_code, summary
+		FROM runs WHERE id = ?
+	`, id).Scan(&r.ID, &r.Job, &r.StartedAt, &r.EndedAt, &r.DurationSecs,
+		&r.InputTokens, &r.OutputTokens, &r.ExitCode, &r.Summary)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("run %d not found", id)
+	}
+	return &r, err
 }

@@ -52,4 +52,5 @@ func init() {
 	rootCmd.AddCommand(diffCmd)
 	rootCmd.AddCommand(skillsCmd)
 	rootCmd.AddCommand(contextCmd)
+	rootCmd.AddCommand(runsCmd)
 }
