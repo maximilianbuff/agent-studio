@@ -218,6 +218,10 @@ func Set(c *Config, key, value string) error {
 			return fmt.Errorf("keyword score must be an integer: %w", err)
 		}
 		c.Keywords[kw] = n
+	case key == "worker_interval":
+		SetJob(c, "worker", value, 0)
+	case key == "scan_interval":
+		SetJob(c, "scan", value, 0)
 	case key == "repomix_enabled":
 		switch value {
 		case "true", "1", "yes":
@@ -230,7 +234,7 @@ func Set(c *Config, key, value string) error {
 			return fmt.Errorf("repomix_enabled must be true or false")
 		}
 	default:
-		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, repomix_enabled, labels.<label>, keywords.<word>", key)
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, repomix_enabled, worker_interval, scan_interval, labels.<label>, keywords.<word>", key)
 	}
 	return nil
 }
