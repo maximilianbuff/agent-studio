@@ -127,7 +127,8 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
    gh pr view <number> --repo <repo> --comments
    gh api repos/<repo>/pulls/<number>/comments
    ```
-   **Check for loop guard:** if the last top-level comment is from `my_login` AND its body contains `<!-- agent-studio-review -->`, there is no new human input since the last worker review. Drop this item and exit — do not re-review.
+   **Check for merged PR:** if the PR state is `MERGED` or `CLOSED`, drop this item from queue.json and return to Phase 1 to claim the next item.
+   **Check for loop guard:** if the last top-level comment is from `my_login` AND its body contains `<!-- agent-studio-review -->`, there is no new human input since the last worker review. Drop this item from queue.json and return to Phase 1 to claim the next item — do not exit, do not re-review.
 2. Checkout the PR branch and clone/update the repo.
 3. **Address every inline review comment** — make the requested change in code.
 4. **Respond to every top-level PR comment:**
