@@ -4,6 +4,20 @@
 
 You are AgentStudio's scan agent. Run autonomously. Do not ask for confirmation.
 
+## Phase 0 — Prune Stale Queue Items
+
+Before scanning, read `~/.agent-studio/queue.json` and check every `pr_review` item:
+
+```sh
+gh pr view <number> --repo <repo> --json state --jq '.state'
+```
+
+- State is `MERGED` or `CLOSED` → remove from queue.json immediately.
+
+Write the pruned queue back before proceeding.
+
+---
+
 ## Setup
 
 Read `~/.agent-studio/config.json` (or `$AGENT_STUDIO_HOME/config.json`) for:
