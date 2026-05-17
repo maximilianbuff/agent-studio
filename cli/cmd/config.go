@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
 	"github.com/maximilianbuff/agent-studio/internal/gitops"
@@ -19,6 +21,13 @@ var configShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Print the full configuration as JSON",
 	RunE:  runConfigShow,
+}
+
+var configGetCmd = &cobra.Command{
+	Use:   "get <key>",
+	Short: "Print a single configuration value (suitable for shell capture)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConfigGet,
 }
 
 var configSetCmd = &cobra.Command{
@@ -77,7 +86,39 @@ func init() {
 		configReposDisableCmd,
 		configReposEnableCmd,
 	)
-	configCmd.AddCommand(configShowCmd, configSetCmd, configReposCmd)
+	configCmd.AddCommand(configShowCmd, configGetCmd, configSetCmd, configReposCmd)
+}
+
+func runConfigGet(cmd *cobra.Command, args []string) error {
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	key := args[0]
+	var val string
+	switch {
+	case key == "my_login":
+		val = c.MyLogin
+	case key == "min_score":
+		val = strconv.Itoa(c.MinScore)
+	case key == "auth_mode":
+		val = c.AuthMode
+		if val == "" {
+			val = "subscription"
+		}
+	case key == "anthropic_api_key":
+		val = c.AnthropicAPIKey
+	case strings.HasPrefix(key, "jobs.") && strings.HasSuffix(key, ".concurrency"):
+		job := strings.TrimSuffix(strings.TrimPrefix(key, "jobs."), ".concurrency")
+		val = strconv.Itoa(c.JobConcurrency(job))
+	case strings.HasPrefix(key, "jobs.") && strings.HasSuffix(key, ".interval"):
+		job := strings.TrimSuffix(strings.TrimPrefix(key, "jobs."), ".interval")
+		val = c.JobInterval(job)
+	default:
+		return fmt.Errorf("unknown key %q — valid keys: my_login, min_score, auth_mode, anthropic_api_key, jobs.<job>.concurrency, jobs.<job>.interval", key)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), val)
+	return nil
 }
 
 func runConfigShow(cmd *cobra.Command, _ []string) error {

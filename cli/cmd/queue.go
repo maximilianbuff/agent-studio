@@ -18,6 +18,12 @@ var queueShowCmd = &cobra.Command{
 	RunE:  runQueueShow,
 }
 
+var queueCountCmd = &cobra.Command{
+	Use:   "count",
+	Short: "Print the number of items in the work queue",
+	RunE:  runQueueCount,
+}
+
 var queueClearCmd = &cobra.Command{
 	Use:   "clear",
 	Short: "Empty the work queue",
@@ -25,7 +31,7 @@ var queueClearCmd = &cobra.Command{
 }
 
 func init() {
-	queueCmd.AddCommand(queueShowCmd, queueClearCmd)
+	queueCmd.AddCommand(queueShowCmd, queueCountCmd, queueClearCmd)
 }
 
 func runQueueShow(cmd *cobra.Command, _ []string) error {
@@ -49,6 +55,15 @@ func runQueueShow(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Fprintf(out, "%-5d  %-35s  #%-6d %s%s\n", it.Score, it.Repo, it.Number, it.Title, claimed)
 	}
+	return nil
+}
+
+func runQueueCount(cmd *cobra.Command, _ []string) error {
+	items, err := queue.Load()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), len(items))
 	return nil
 }
 

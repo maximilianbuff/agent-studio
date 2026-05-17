@@ -9,7 +9,6 @@ set -euo pipefail
 JOB="${1:?Usage: agent-studio-run <job-name>}"
 STUDIO_HOME="${AGENT_STUDIO_HOME:-$HOME/.agent-studio}"
 LOG_FILE="$STUDIO_HOME/logs/${JOB}.log"
-CONFIG_FILE="$STUDIO_HOME/config.json"
 
 # Cron strips the user environment — source profile to restore PATH.
 # shellcheck disable=SC1090,SC1091
@@ -20,8 +19,8 @@ done
 mkdir -p "$(dirname "$LOG_FILE")"
 
 # --- Numbered lockfile concurrency (worker only, others use single lock) ---
-if [[ "$JOB" == "worker" ]] && [[ -f "$CONFIG_FILE" ]]; then
-  MAX_WORKERS=$(jq -r '.jobs.worker.concurrency // 1' "$CONFIG_FILE" 2>/dev/null || echo "1")
+if [[ "$JOB" == "worker" ]]; then
+  MAX_WORKERS=$(studio config get jobs.worker.concurrency 2>/dev/null || echo "1")
   [[ "$MAX_WORKERS" =~ ^[1-9][0-9]*$ ]] || MAX_WORKERS=1
 else
   MAX_WORKERS=1
@@ -58,8 +57,7 @@ if [[ "$JOB" == "worker" ]]; then
     echo "[agent-studio-run] prioritize failed, skipping worker" >&2
     exit 0
   fi
-  QUEUE_FILE="$STUDIO_HOME/queue.json"
-  QUEUE_COUNT=$(jq '(.items // .) | length' "$QUEUE_FILE" 2>/dev/null || echo "0")
+  QUEUE_COUNT=$(studio queue count 2>/dev/null || echo "0")
   if [[ "$QUEUE_COUNT" -eq 0 ]]; then
     echo "[agent-studio-run] queue empty after prioritize, skipping worker" >&2
     exit 0
@@ -74,13 +72,11 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
 fi
 
 # --- Auth mode ---
-if [[ -f "$CONFIG_FILE" ]]; then
-  AUTH_MODE=$(jq -r '.auth_mode // "subscription"' "$CONFIG_FILE" 2>/dev/null || echo "subscription")
-  if [[ "$AUTH_MODE" == "api_key" ]]; then
-    API_KEY=$(jq -r '.anthropic_api_key // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
-    if [[ -n "$API_KEY" ]]; then
-      export ANTHROPIC_API_KEY="$API_KEY"
-    fi
+AUTH_MODE=$(studio config get auth_mode 2>/dev/null || echo "subscription")
+if [[ "$AUTH_MODE" == "api_key" ]]; then
+  API_KEY=$(studio config get anthropic_api_key 2>/dev/null || echo "")
+  if [[ -n "$API_KEY" ]]; then
+    export ANTHROPIC_API_KEY="$API_KEY"
   fi
 fi
 
