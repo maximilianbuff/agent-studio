@@ -59,8 +59,8 @@ func init() {
 	workCmd.AddCommand(workListCmd, workStatsCmd, workShowCmd, workUpdateCmd, workPrioritizeCmd)
 }
 
-// prAttentionScore returns the score for a PR needing worker attention (0 = skip).
-// Conflicting > changes requested > CI failing — all multiplied by repo weight.
+// prAttentionScore returns the priority score for an open PR.
+// Problem states and comments score higher; clean PRs with no comments score 1.
 func prAttentionScore(pr db.PRRecord, repoWeights map[string]float64) int {
 	w := repoWeights[pr.Repo]
 	if w <= 0 {
@@ -73,8 +73,11 @@ func prAttentionScore(pr db.PRRecord, repoWeights map[string]float64) int {
 		return int(30 * w)
 	case pr.CIStatus == "FAILURE" || pr.CIStatus == "ERROR":
 		return int(25 * w)
+	case pr.CommentCount > 0:
+		return int(15 * w)
+	default:
+		return 1
 	}
-	return 0
 }
 
 func runWorkPrioritize(cmd *cobra.Command, _ []string) error {
@@ -114,26 +117,24 @@ func runWorkPrioritize(cmd *cobra.Command, _ []string) error {
 		})
 	}
 
-	// Own PRs needing attention (conflicting, changes requested, CI failing).
-	if cfg.MyLogin != "" {
-		prs, err := d.ListPRsNeedingAttention(cfg.MyLogin)
-		if err != nil {
-			return err
-		}
-		for _, pr := range prs {
-			score := prAttentionScore(pr, repoWeights)
-			if score == 0 {
-				continue
-			}
-			items = append(items, queue.Item{
-				Type:   "pr_review",
-				Repo:   pr.Repo,
-				Number: pr.Number,
-				Title:  pr.Title,
-				URL:    pr.URL,
-				Score:  score,
-			})
-		}
+	// All open PRs for configured repos — worker decides per-PR whether to act.
+	repoNames := make([]string, 0, len(cfg.Repos))
+	for _, r := range cfg.Repos {
+		repoNames = append(repoNames, r.Repo)
+	}
+	prs, err := d.ListOpenPRs(repoNames)
+	if err != nil {
+		return err
+	}
+	for _, pr := range prs {
+		items = append(items, queue.Item{
+			Type:   "pr_review",
+			Repo:   pr.Repo,
+			Number: pr.Number,
+			Title:  pr.Title,
+			URL:    pr.URL,
+			Score:  prAttentionScore(pr, repoWeights),
+		})
 	}
 
 	slices.SortFunc(items, func(a, b queue.Item) int { return b.Score - a.Score })

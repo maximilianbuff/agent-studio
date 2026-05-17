@@ -26,15 +26,16 @@ type ghLabel struct{ Name string `json:"name"` }
 type ghUser struct{ Login string `json:"login"` }
 
 type ghPR struct {
-	Number      int    `json:"number"`
-	Title       string `json:"title"`
-	URL         string `json:"url"`
-	State       string `json:"state"`          // OPEN, CLOSED, MERGED
-	MergedAt    string `json:"mergedAt"`
-	HeadRefName string `json:"headRefName"`    // e.g. "issue/42"
-	Mergeable   string `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN
+	Number         int    `json:"number"`
+	Title          string `json:"title"`
+	URL            string `json:"url"`
+	State          string `json:"state"`          // OPEN, CLOSED, MERGED
+	MergedAt       string `json:"mergedAt"`
+	HeadRefName    string `json:"headRefName"`    // e.g. "issue/42"
+	Mergeable      string `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN
 	ReviewDecision string `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
-	Author      struct {
+	Comments       int    `json:"comments"`
+	Author         struct {
 		Login string `json:"login"`
 	} `json:"author"`
 	StatusCheckRollup []struct {
@@ -217,6 +218,7 @@ func scanRepoPRs(d *db.DB, repo string) error {
 			ReviewDecision: pr.ReviewDecision,
 			CIStatus:       aggregateCIStatus(pr),
 			MergedAt:       pr.MergedAt,
+			CommentCount:   pr.Comments,
 		})
 	}
 	return nil
@@ -290,7 +292,7 @@ func listRepoPRs(repo string) ([]ghPR, error) {
 		"--repo", repo,
 		"--state", "open",
 		"--limit", "200",
-		"--json", "number,title,url,state,mergedAt,headRefName,mergeable,reviewDecision,statusCheckRollup,author",
+		"--json", "number,title,url,state,mergedAt,headRefName,mergeable,reviewDecision,statusCheckRollup,author,comments",
 	)
 	if err != nil {
 		return nil, err
