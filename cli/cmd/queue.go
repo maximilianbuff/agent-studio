@@ -30,8 +30,14 @@ var queueClearCmd = &cobra.Command{
 	RunE:  runQueueClear,
 }
 
+var queuePeekCmd = &cobra.Command{
+	Use:   "peek",
+	Short: "Print the repo of the highest-priority queue item (empty output if queue is empty)",
+	RunE:  runQueuePeek,
+}
+
 func init() {
-	queueCmd.AddCommand(queueShowCmd, queueCountCmd, queueClearCmd)
+	queueCmd.AddCommand(queueShowCmd, queueCountCmd, queueClearCmd, queuePeekCmd)
 }
 
 func runQueueShow(cmd *cobra.Command, _ []string) error {
@@ -72,5 +78,17 @@ func runQueueClear(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "ok  queue cleared")
+	return nil
+}
+
+func runQueuePeek(cmd *cobra.Command, _ []string) error {
+	items, err := queue.Load()
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), items[0].Repo)
 	return nil
 }
