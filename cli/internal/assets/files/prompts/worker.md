@@ -94,6 +94,7 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
    gh pr view <number> --repo <repo> --comments
    gh api repos/<repo>/pulls/<number>/comments
    ```
+   **Check for loop guard:** if the last top-level comment is from `my_login` AND its body contains `<!-- agent-studio-review -->`, there is no new human input since the last worker review. Drop this item and exit — do not re-review.
 2. Checkout the PR branch and clone/update the repo.
 3. **Address every inline review comment** — make the requested change in code.
 4. **Respond to every top-level PR comment:**
@@ -106,7 +107,10 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
    - Lint clean (if applicable)
 6. Push the branch: `git push origin <branch>`
 7. Reply to each inline comment: `Fixed in <sha>: <what changed>`
-8. Post a final summary comment covering all changes made and all questions answered:
+8. Post a final summary comment covering all changes made and all questions answered.
+   Always append the marker on its own line at the end so the loop guard can detect this is a worker review (not a manual comment from `my_login`):
    ```sh
-   gh pr comment <number> --repo <repo> --body "<summary>"
+   gh pr comment <number> --repo <repo> --body "<summary>
+
+<!-- agent-studio-review -->"
    ```
