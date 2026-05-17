@@ -73,6 +73,7 @@ func runInstall(cmd *cobra.Command, _ []string) error {
 		filepath.Join(studioHome, "bin"),
 		filepath.Join(studioHome, "prompts"),
 		filepath.Join(studioHome, "logs"),
+		filepath.Join(studioHome, "context"),
 	}
 	for _, d := range dirs {
 		line(out, "mkdir   %s", d)

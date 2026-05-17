@@ -3,3 +3,4 @@ queue.json
 logs/
 studio.db
 studio.db-*
+context/

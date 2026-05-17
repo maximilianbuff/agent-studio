@@ -309,10 +309,37 @@ func TestInstall_gitignoreContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf(".gitignore not found: %v", err)
 	}
-	for _, pattern := range []string{"queue.json", "*.lock", "logs/"} {
+	for _, pattern := range []string{"queue.json", "*.lock", "logs/", "context/"} {
 		if !strings.Contains(string(data), pattern) {
 			t.Errorf(".gitignore missing pattern %q", pattern)
 		}
+	}
+}
+
+func TestInstall_contextSurvivesReinstall(t *testing.T) {
+	studioHome := t.TempDir()
+
+	out1, err := runStudio(t, studioHome, "install", "--no-cron")
+	if err != nil {
+		t.Fatalf("first install: %s: %v", out1, err)
+	}
+
+	contextFile := filepath.Join(studioHome, "context", "owner-repo.md")
+	if err := os.WriteFile(contextFile, []byte("# saved context\n"), 0o644); err != nil {
+		t.Fatalf("write context file: %v", err)
+	}
+
+	out2, err := runStudio(t, studioHome, "install", "--no-cron")
+	if err != nil {
+		t.Fatalf("second install: %s: %v", out2, err)
+	}
+
+	data, err := os.ReadFile(contextFile)
+	if err != nil {
+		t.Fatalf("context file missing after reinstall: %v", err)
+	}
+	if string(data) != "# saved context\n" {
+		t.Errorf("context file content changed: got %q", string(data))
 	}
 }
 

@@ -41,6 +41,14 @@ gh issue edit <number> --repo <repo> --add-label "in-progress"
 studio work update <repo>#<number> --status in_progress
 ```
 
+**Load repo context** (if present) before starting work:
+
+```sh
+studio context show <owner/repo>
+```
+
+If output is non-empty, treat it as prior session knowledge — architecture, patterns, open PRs, recent completions. Use it to skip redundant repo exploration.
+
 ---
 
 ## Phase 2 — Work
@@ -84,6 +92,31 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
      --body "Closes #<number>\n\n<brief summary of changes>")
    studio work update <repo>#<number> --status pr_opened --pr-url "$PR_URL"
    ```
+10. **Update repo context** — write a concise summary to
+    `${AGENT_STUDIO_HOME:-$HOME/.agent-studio}/context/<owner>-<repo>.md`
+    so the next session starts informed. Use this template (≤30 lines total):
+
+    ```markdown
+    # <owner/repo> — agent context
+    Last updated: <ISO timestamp>
+
+    ## Architecture
+    <1-3 bullet points: language, build tool, key dirs>
+
+    ## Patterns
+    <1-2 bullet points: naming conventions, test setup, commit style>
+
+    ## Open PRs (agent-authored)
+    - #<number> <branch> → <base> (<one-line description>)
+
+    ## Recent completions
+    - #<number> <brief description>
+    ```
+
+    If a context file already exists, read it first and merge: update
+    "Last updated", carry forward Architecture/Patterns unless you learned
+    something new, update Open PRs list, and append to Recent completions
+    (keep at most the last 5 entries).
 
 ---
 
@@ -110,3 +143,4 @@ If `type == "pr_review"`: follow the **PR Review Protocol**.
    ```sh
    gh pr comment <number> --repo <repo> --body "<summary>"
    ```
+7. Update repo context (same as Issue Implementation Protocol step 10).
