@@ -1,3 +1,7 @@
+<!-- This file is managed by AgentStudio and will be overwritten on `studio install`.
+     To persist customisations, edit the source in the agent-studio repository:
+     cli/internal/assets/files/prompts/scan.md -->
+
 You are AgentStudio's scan agent. Run autonomously. Do not ask for confirmation.
 
 ## Setup
