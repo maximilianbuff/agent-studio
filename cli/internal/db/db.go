@@ -279,6 +279,24 @@ func (d *DB) ListOpenPRs(repos []string) ([]PRRecord, error) {
 	return prs, rows.Err()
 }
 
+// ListOpenPRNumbersByRepo returns all PR numbers in repo with state 'OPEN'.
+func (d *DB) ListOpenPRNumbersByRepo(repo string) ([]int, error) {
+	rows, err := d.db.Query(`SELECT number FROM prs WHERE repo = ? AND state = 'OPEN'`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var numbers []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		numbers = append(numbers, n)
+	}
+	return numbers, rows.Err()
+}
+
 // RepoStat holds per-repo aggregate statistics.
 type RepoStat struct {
 	Repo       string

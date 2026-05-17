@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/maximilianbuff/agent-studio/internal/config"
@@ -199,13 +200,18 @@ func keywordScore(cfg config.Config, issue ghIssue) int {
 // ─── PR scanning ─────────────────────────────────────────────────────────────
 
 // scanRepoPRs fetches all open PRs for a repo and upserts them into the DB.
-// Any author, any state — the prioritizer decides what's relevant per job.
+// After upserting, it reconciles stale DB-open PRs that no longer appear in the
+// live list by fetching their actual state and updating the DB. This ensures
+// closed/merged PRs stop re-entering the work queue on every prioritize run.
 func scanRepoPRs(d *db.DB, repo string) error {
 	prs, err := listRepoPRs(repo)
 	if err != nil {
 		return err
 	}
+
+	liveSet := make(map[int]bool, len(prs))
 	for _, pr := range prs {
+		liveSet[pr.Number] = true
 		_ = d.UpsertPR(db.PRRecord{
 			Repo:           repo,
 			Number:         pr.Number,
@@ -221,7 +227,53 @@ func scanRepoPRs(d *db.DB, repo string) error {
 			CommentCount:   len(pr.Comments),
 		})
 	}
+
+	// Reconcile stale DB-open PRs that are no longer in the live open list.
+	dbOpen, err := d.ListOpenPRNumbersByRepo(repo)
+	if err != nil {
+		return err
+	}
+	for _, n := range dbOpen {
+		if liveSet[n] {
+			continue
+		}
+		actual, err := fetchPRState(repo, n)
+		if err != nil {
+			fmt.Fprintf(errWriter{}, "warn: fetch PR state %s#%d: %v\n", repo, n, err)
+			continue
+		}
+		_ = d.UpsertPR(*actual)
+	}
 	return nil
+}
+
+// fetchPRState calls gh to get the current state of a single PR.
+func fetchPRState(repo string, number int) (*db.PRRecord, error) {
+	out, err := gh("pr", "view", strconv.Itoa(number),
+		"--repo", repo,
+		"--json", "number,title,url,state,mergedAt,headRefName,mergeable,reviewDecision,statusCheckRollup,author,comments",
+	)
+	if err != nil {
+		return nil, err
+	}
+	var pr ghPR
+	if err := json.Unmarshal(out, &pr); err != nil {
+		return nil, err
+	}
+	return &db.PRRecord{
+		Repo:           repo,
+		Number:         pr.Number,
+		Author:         pr.Author.Login,
+		Title:          pr.Title,
+		URL:            pr.URL,
+		HeadRef:        pr.HeadRefName,
+		State:          pr.State,
+		Mergeable:      pr.Mergeable,
+		ReviewDecision: pr.ReviewDecision,
+		CIStatus:       aggregateCIStatus(pr),
+		MergedAt:       pr.MergedAt,
+		CommentCount:   len(pr.Comments),
+	}, nil
 }
 
 // aggregateCIStatus reduces the statusCheckRollup slice to a single string.
